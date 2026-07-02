@@ -61,7 +61,7 @@ test('a failed source degrades visibly: excluded from formula, weights renormali
   const fundingRow = page.locator('table.ledger tbody tr', { hasText: 'BTC perp funding' })
   await expect(fundingRow).toContainText('source down')
   await expect(fundingRow).toContainText('excluded')
-  const fundingCard = page.locator('.panel', { hasText: 'BTC PERP FUNDING' }).first()
+  const fundingCard = page.locator('.cards .panel', { hasText: 'BTC perp funding' })
   await expect(fundingCard.locator('.badge.down')).toBeVisible()
   await expect(fundingCard.locator('.bigval')).toContainText('—') // never a fabricated number
 })
