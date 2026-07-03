@@ -31,6 +31,12 @@ const HEALTHY = {
     stats: { last: 96412, ma50: 99000, ma200: 91000, distFromMA200Pct: 5.9, high365: 126000, drawdownFromHighPct: -23.5, realizedVol30Pct: 42.1, days: 365 },
     series: [], meta: { source: 'btchistory', fetchedAt: NOW, cache: 'hit' },
   },
+  candles: {
+    tf: '5m', venue: 'kraken',
+    candles: Array.from({ length: 150 }, (_, i) => { const c = 90000 + i * 60; return { t: 1780000000 + i * 300, o: c - 30, h: c + 60, l: c - 90, c, v: 5 } }),
+    meta: { source: 'candles', fetchedAt: NOW, latencyMs: 90 },
+  },
+  paper: { open: [], closed: [], stats: { trades: 0 }, feePctPerSide: 0.1, meta: { fetchedAt: NOW } },
   triggers: { triggers: [{ ts: NOW - 86400000, key: 'contrarian_btc', name: 'Contrarian accumulation conditions — BTC', btc: 92000, score: 31 }], count: 1, meta: { fetchedAt: NOW } },
 }
 
@@ -40,7 +46,8 @@ async function mockApi(page, overrides = {}) {
     const name = url.pathname.replace(/^\/api\//, '').split('?')[0]
     const o = overrides[name]
     if (o?.status) return route.fulfill({ status: o.status, contentType: 'application/json', body: JSON.stringify(o.body || { error: 'boom' }) })
-    const body = o?.body ?? HEALTHY[name]
+    const rawBody = typeof o?.body === 'function' ? o.body(route) : o?.body
+    const body = rawBody ?? HEALTHY[name]
     if (!body) return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
   })
@@ -150,6 +157,36 @@ test('Trading Floor shows the setups strip pointing at the closest setup', async
   await mockApi(page)
   await page.goto('/')
   await expect(page.getByText(/closest: .* \(\d of \d conditions\)/)).toBeVisible()
+})
+
+test('Trader tab: chart renders, regime reads the tape, projection carries its honesty label', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Trader' }).click()
+  await expect(page.locator('.regimebanner .regstate')).toHaveText('TRENDING UP') // clean synthetic uptrend
+  await expect(page.locator('.candlechart canvas').first()).toBeVisible() // lightweight-charts mounted
+  await expect(page.getByText(/not a forecast/i).first()).toBeVisible()
+  await expect(page.getByText('Automation · locked by design')).toBeVisible()
+})
+
+test('Paper ledger: opening a trade posts to the server and renders the open position', async ({ page }) => {
+  const openTrade = { id: 'pt1', ts: Date.now(), side: 'long', sizeUsd: 1000, entry: 96400, venue: 'kraken', note: 'vwap reclaim' }
+  let opened = false
+  await mockApi(page, {
+    paper: {
+      body: (route) => {
+        if (route.request().method() === 'POST') { opened = true; return { ok: true, trade: openTrade, open: [openTrade], closed: [] } }
+        return opened
+          ? { open: [openTrade], closed: [], stats: { trades: 0 }, feePctPerSide: 0.1, meta: { fetchedAt: Date.now() } }
+          : { open: [], closed: [], stats: { trades: 0 }, feePctPerSide: 0.1, meta: { fetchedAt: Date.now() } }
+      },
+    },
+  })
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Trader' }).click()
+  await page.getByRole('button', { name: 'Open paper long' }).click()
+  await expect(page.locator('table.stress')).toContainText('vwap reclaim')
+  await expect(page.locator('table.stress')).toContainText('$96,400')
 })
 
 test('token gate appears when the API demands auth', async ({ page }) => {

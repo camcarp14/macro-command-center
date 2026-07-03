@@ -50,6 +50,16 @@ All weighting lives in one place: **`src/lib/score.js` → `INPUTS`**. Each inpu
 
 If a source is down, its input is **excluded and the remaining weights are renormalized** — and the UI says exactly that ("7/8 inputs · weights renormalized"), with the missing row shown as excluded. A degraded score is labeled degraded, never passed off as complete.
 
+## Trader tab (intraday)
+
+Candlestick charts (TradingView's open-source lightweight-charts) on **1m / 3m / 5m / 15m** BTC, refreshing every 30s without resetting your zoom. Data: **Kraken public OHLC primary** (720 candles of depth), Coinbase Exchange fallback, venue always named; 3m is aggregated server-side from 1m since neither venue serves it natively. Overlays: EMA 9/21/50, UTC-anchored session VWAP, volume; readout shows RSI14 and ATR14. All indicator math lives in `src/lib/ta.js` with unit tests against known values.
+
+**Regime banner** — transparent rules, not vibes: TRENDING UP requires price above session VWAP, EMAs stacked 9>21>50, and EMA separation > 0.15× ATR; TRENDING DOWN is the mirror; everything else is CHOP, labeled as the state where short-timeframe entries historically bleed fees. **Volatility pockets** shows average bar range by hour over the loaded sample (your local time) — measured past, not promised future.
+
+**Projection panel** — the honest version of bear/base/bull: a volatility-implied cone from 30d realized vol (zero-drift base, ±1σ and 95% bands scaling with √t), drawn over the last 90 days of actual closes. It is labeled a distribution, not a forecast, because that is what it is; the daily σ used is printed under the chart.
+
+**Paper trading ledger** — entries and exits are stamped *server-side* from the live market price and every round trip is charged 0.1%/side simulated fees, so the record can't flatter you. Stats: win rate, expectancy per trade, net P&L, total fees, max drawdown. **Automation is locked by design** and the panel says exactly what unlocks the next conversation: 50+ closed paper trades, positive expectancy net of fees, and a written max-daily-loss rule — after which the build target is deterministic rules with hard size caps and human confirmation per order. A discretionary AI holding wallet keys is intentionally not on the roadmap.
+
 ## Simple / Advanced toggle
 
 The header has a Simple/Advanced switch (persisted in your browser). **Simple** leads with a one-sentence plain-English headline for the score and hides the raw formula math (ranges, normalization, weights). **Advanced** shows everything — nothing is removed, Simple just reorders what's in front. Metric card labels also got plain-language clarifiers everywhere (e.g. "Corporate credit risk (HY OAS)" instead of just "HY OAS") regardless of mode.

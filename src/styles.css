@@ -175,3 +175,21 @@ h2.sec { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; col
 .conds li.unk .tick { color: var(--muted); }
 .conds .cv { margin-left: auto; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
 .setupnote { line-height: 1.5; margin-top: 6px; border-top: 1px dashed var(--line); padding-top: 8px; }
+
+/* ---- Trader ---- */
+.candlechart { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel-2); }
+.chartlegend { display: flex; gap: 14px; flex-wrap: wrap; font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px; }
+.regimebanner { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; border: 1px solid var(--line); border-left-width: 3px; border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; background: var(--panel-2); }
+.regimebanner.live { border-left-color: var(--live); } .regimebanner.down { border-left-color: var(--down); }
+.regimebanner.stale { border-left-color: var(--stale); } .regimebanner.sync { border-left-color: var(--line); }
+.regstate { font-family: var(--mono); font-weight: 700; font-size: 15px; letter-spacing: 0.05em; }
+.regimebanner.live .regstate { color: var(--live); } .regimebanner.down .regstate { color: var(--down); }
+.regimebanner.stale .regstate { color: var(--stale); } .regimebanner.sync .regstate { color: var(--muted); }
+.regplain { color: var(--muted); font-size: 12.5px; line-height: 1.5; flex: 1; min-width: 260px; }
+.hourbars { display: flex; gap: 4px; align-items: flex-end; height: 110px; }
+.hourbar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; height: 100%; }
+.hourbar i { width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px 3px 0 0; display: block; }
+.hourbar.hot i { background: color-mix(in srgb, var(--accent) 35%, var(--panel-2)); border-color: var(--accent); }
+.hourbar span { font-family: var(--mono); font-size: 9px; color: var(--dim); transform: rotate(-45deg); white-space: nowrap; }
+svg.cone { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.automation { border-left: 3px solid var(--stale); }

@@ -7,6 +7,9 @@ import {
 import { buildFactSheet, validateNarrative, displayText } from './lib/narrative.js'
 import { buildMarketRead } from './lib/signals.js'
 import { evaluateSetups, setupsSummary } from './lib/setups.js'
+import { ema, rsi, atr, vwapDaily, regimeRead, hourlyActivity } from './lib/ta.js'
+import { projectionCone } from './lib/projection.js'
+import { createChart } from 'lightweight-charts'
 
 // Simple/Advanced is driven by one CSS class on the shell (see App()).
 // `.advanced-only` elements hide in Simple mode; `.simple-only` elements
@@ -619,6 +622,7 @@ const SOURCE_ROWS = [
   { key: 'funding', label: 'BTC perp funding (Deribit → Binance fallback)', endpoint: '/api/funding' },
   { key: 'feargreed', label: 'Fear & Greed (alternative.me)', endpoint: '/api/feargreed' },
   { key: 'aave', label: 'Aave V3 Arbitrum (on-chain read)', endpoint: '/api/aave' },
+  { key: 'candles', label: 'Intraday candles (Kraken → Coinbase fallback)', endpoint: '/api/candles' },
   { key: 'btchistory', label: 'BTC daily history 365d (CoinGecko, 6h cache)', endpoint: '/api/btchistory' },
   { key: 'edgar', label: 'SEC EDGAR XBRL (weekly cache)', endpoint: '/api/edgar' },
   { key: 'snapshot', label: 'Snapshot logger (scheduled)', endpoint: 'cron' },
@@ -644,7 +648,9 @@ function Sources({ S, load }) {
             const rec = st?.sources?.[row.key]
             const clientStatus = row.key === 'snapshot'
               ? freshness(rec?.lastSuccessAt, 45 * 60, Date.now(), !!rec, rec ? !rec.ok : false)
-              : row.key === 'edgar'
+              : row.key === 'candles'
+                ? freshness(rec?.lastSuccessAt, 300, Date.now(), !!rec, rec ? !rec.ok : false)
+                : row.key === 'edgar'
                 ? freshness(rec?.lastSuccessAt, SOURCE_MAX_AGE_SEC.edgar, Date.now(), !!rec, rec ? !rec.ok : false)
                 : srcStatus(S, row.key)
             return (
@@ -742,7 +748,287 @@ function TokenGate({ onDone }) {
   )
 }
 
-const TABS = ['Trading Floor', 'Setups', 'Positions', 'Thesis Tracker', 'Data Sources', 'Token Usage']
+
+/* ---------------- Trader: intraday charts, regime, projection, paper ledger ---------------- */
+const CHART_COLORS = { up: '#3dd68c', down: '#e5484d', ema9: '#5cc8ff', ema21: '#e5a83b', ema50: '#8a93a6', vwap: '#d8c25c', grid: '#1e2430', text: '#8a93a6' }
+
+function CandleChart({ candles, height = 380 }) {
+  const ref = useRef(null)
+  const chartRef = useRef(null)
+  useEffect(() => {
+    if (!ref.current) return
+    const chart = createChart(ref.current, {
+      width: ref.current.clientWidth || 600, height,
+      layout: { background: { color: 'transparent' }, textColor: CHART_COLORS.text, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11 },
+      grid: { vertLines: { color: CHART_COLORS.grid }, horzLines: { color: CHART_COLORS.grid } },
+      timeScale: { timeVisible: true, secondsVisible: false, borderColor: CHART_COLORS.grid },
+      rightPriceScale: { borderColor: CHART_COLORS.grid },
+    })
+    const candleSeries = chart.addCandlestickSeries({ upColor: CHART_COLORS.up, downColor: CHART_COLORS.down, wickUpColor: CHART_COLORS.up, wickDownColor: CHART_COLORS.down, borderVisible: false })
+    const vol = chart.addHistogramSeries({ priceScaleId: '', priceFormat: { type: 'volume' } })
+    vol.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } })
+    const mkLine = (color, lineWidth = 1) => chart.addLineSeries({ color, lineWidth, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false })
+    chartRef.current = { chart, candleSeries, vol, e9: mkLine(CHART_COLORS.ema9), e21: mkLine(CHART_COLORS.ema21), e50: mkLine(CHART_COLORS.ema50), vw: mkLine(CHART_COLORS.vwap, 2) }
+    const onResize = () => chart.applyOptions({ width: ref.current?.clientWidth || 600 })
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize); chart.remove(); chartRef.current = null }
+  }, [height])
+  useEffect(() => {
+    const r = chartRef.current
+    if (!r || !candles?.length) return
+    r.candleSeries.setData(candles.map((c) => ({ time: c.t, open: c.o, high: c.h, low: c.l, close: c.c })))
+    r.vol.setData(candles.map((c) => ({ time: c.t, value: c.v, color: c.c >= c.o ? 'rgba(61,214,140,0.35)' : 'rgba(229,72,77,0.35)' })))
+    const closes = candles.map((c) => c.c)
+    const toLine = (arr) => arr.map((v, i) => (v == null ? null : { time: candles[i].t, value: v })).filter(Boolean)
+    r.e9.setData(toLine(ema(closes, 9)))
+    r.e21.setData(toLine(ema(closes, 21)))
+    r.e50.setData(toLine(ema(closes, 50)))
+    r.vw.setData(toLine(vwapDaily(candles)))
+    if (!r.fitted) { r.chart.timeScale().fitContent(); r.fitted = true } // fit once — never yank the trader's zoom on refresh
+  }, [candles])
+  return <div ref={ref} className="candlechart" style={{ width: '100%' }} />
+}
+
+function ProjectionCone({ series, stats }) {
+  const [horizon, setHorizon] = useState(7)
+  const cone = useMemo(() => projectionCone({ lastPrice: stats?.last, realizedVolPct: stats?.realizedVol30Pct, horizonDays: horizon }), [stats, horizon])
+  if (!cone) return <div className="sub">Projection needs BTC daily history — check the /api/btchistory row on Data Sources.</div>
+  const hist = (series || []).slice(-90)
+  const all = [...hist.map(([, p]) => p), ...cone.days.flatMap((d) => [d.up95, d.dn95])]
+  const min = Math.min(...all), max = Math.max(...all)
+  const W = 720, H = 240, PAD = 4
+  const n = hist.length + cone.days.length - 1
+  const X = (i) => PAD + (i / Math.max(1, n)) * (W - 2 * PAD)
+  const Y = (p) => H - PAD - ((p - min) / (max - min || 1)) * (H - 2 * PAD)
+  const histPts = hist.map(([, p], i) => `${X(i).toFixed(1)},${Y(p).toFixed(1)}`).join(' ')
+  const cX = (j) => X(hist.length - 1 + j)
+  const band = (upKey, dnKey) => {
+    const up = cone.days.map((d, j) => `${cX(j).toFixed(1)},${Y(d[upKey]).toFixed(1)}`)
+    const dn = cone.days.map((d, j) => `${cX(j).toFixed(1)},${Y(d[dnKey]).toFixed(1)}`).reverse()
+    return [...up, ...dn].join(' ')
+  }
+  const line = (key) => cone.days.map((d, j) => `${cX(j).toFixed(1)},${Y(d[key]).toFixed(1)}`).join(' ')
+  const sm = cone.summary
+  return (
+    <div>
+      <div className="hfline" style={{ marginBottom: 8 }}>
+        <div className="modeswitch" role="group" aria-label="Projection horizon">
+          <button className={horizon === 7 ? 'on' : ''} onClick={() => setHorizon(7)}>1 week</button>
+          <button className={horizon === 30 ? 'on' : ''} onClick={() => setHorizon(30)}>1 month</button>
+        </div>
+        <div className="sub num">
+          bear −1σ {usd(sm.bear1s)} · base {usd(sm.base)} · bull +1σ {usd(sm.bull1s)} · 68% band ±{sm.band68Pct}% · 95% {usd(sm.dn95)}–{usd(sm.up95)}
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="cone" role="img" aria-label="volatility-implied projection cone">
+        <polygon points={band('up95', 'dn95')} fill="rgba(92,200,255,0.07)" />
+        <polygon points={band('bull1s', 'bear1s')} fill="rgba(92,200,255,0.16)" />
+        <polyline points={histPts} fill="none" stroke="#e8ebf2" strokeWidth="1.5" />
+        <polyline points={line('base')} fill="none" stroke="#8a93a6" strokeWidth="1" strokeDasharray="4 4" />
+        <polyline points={line('bull1s')} fill="none" stroke="#3dd68c" strokeWidth="1" />
+        <polyline points={line('bear1s')} fill="none" stroke="#e5484d" strokeWidth="1" />
+      </svg>
+      <div className="caveat">{cone.caveat} Daily σ used: {cone.sigmaDailyPct}% (from 30d realized vol {fmt(stats?.realizedVol30Pct, 1)}%).</div>
+    </div>
+  )
+}
+
+function HourPockets({ candles }) {
+  const rows = useMemo(() => hourlyActivity(candles), [candles])
+  if (!rows.length) return null
+  const spanDays = candles.length ? ((candles[candles.length - 1].t - candles[0].t) / 86400).toFixed(1) : '0'
+  const top = [...rows].sort((a, b) => b.avgRangePct - a.avgRangePct).slice(0, 3).map((r) => r.hourUtc)
+  const toLocal = (hUtc) => { const d = new Date(Date.UTC(2026, 0, 1, hUtc)); return d.toLocaleTimeString([], { hour: 'numeric' }) }
+  return (
+    <div>
+      <div className="sub" style={{ marginBottom: 8 }}>Average bar range by hour over the loaded sample (~{spanDays} days), shown in your local time. Volatility clusters by session — the shaded hours are where this sample actually moved. Measurement of the recent past, not a promise.</div>
+      <div className="hourbars">
+        {rows.map((r) => (
+          <div key={r.hourUtc} className={`hourbar ${top.includes(r.hourUtc) ? 'hot' : ''}`} title={`${r.avgRangePct}% avg range · ${r.samples} bars`}>
+            <i style={{ height: `${Math.max(6, r.rel * 100)}%` }} />
+            <span>{toLocal(r.hourUtc)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function PaperPanel({ lastPrice }) {
+  const [book, setBook] = useState(null)
+  const [err, setErr] = useState(null)
+  const [side, setSide] = useState('long')
+  const [size, setSize] = useState('1000')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const refresh = useCallback(async () => {
+    try { setBook(await api('paper')) } catch (e) { setErr(e.message) }
+  }, [])
+  useEffect(() => { refresh() }, [refresh])
+
+  const openTrade = async () => {
+    setBusy(true); setErr(null)
+    try { await api('paper', { method: 'POST', body: JSON.stringify({ action: 'open', side, sizeUsd: Number(size), note }) }); setNote(''); await refresh() }
+    catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  const closeTrade = async (id) => {
+    setBusy(true); setErr(null)
+    try { await api('paper', { method: 'POST', body: JSON.stringify({ action: 'close', id }) }); await refresh() }
+    catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  const livePnl = (t) => {
+    if (!Number.isFinite(lastPrice)) return null
+    const dir = t.side === 'long' ? 1 : -1
+    return ((lastPrice - t.entry) / t.entry) * dir * t.sizeUsd
+  }
+  const st = book?.stats
+  return (
+    <div>
+      <div className="sub" style={{ marginBottom: 10 }}>Entries and exits are stamped server-side from the live market price, and every round trip is charged {book?.feePctPerSide ?? 0.1}% per side in simulated fees — so this ledger tells you the truth about your intraday results before any real dollar does. This record is the gate in front of automation.</div>
+      <div className="note-row" style={{ flexWrap: 'wrap' }}>
+        <div className="modeswitch" role="group" aria-label="Side">
+          <button className={side === 'long' ? 'on' : ''} onClick={() => setSide('long')}>Long</button>
+          <button className={side === 'short' ? 'on' : ''} onClick={() => setSide('short')}>Short</button>
+        </div>
+        <input className="num" style={{ flex: '0 0 110px' }} value={size} onChange={(e) => setSize(e.target.value)} inputMode="decimal" aria-label="size in USD" />
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="setup / reason (this is the part that teaches you)" />
+        <button className="btn primary" onClick={openTrade} disabled={busy}>Open paper {side}</button>
+      </div>
+      {err && <div className="sub" style={{ color: 'var(--down)', marginTop: 6 }}>{err}</div>}
+
+      {book?.open?.length > 0 && (
+        <table className="stress section-gap">
+          <thead><tr><th>Opened</th><th>Side</th><th>Size</th><th>Entry</th><th>Live P&L</th><th>Note</th><th></th></tr></thead>
+          <tbody>
+            {book.open.map((t) => {
+              const p = livePnl(t)
+              return (
+                <tr key={t.id}>
+                  <td>{new Date(t.ts).toLocaleTimeString([], { hour12: false })}</td>
+                  <td>{t.side}</td>
+                  <td>{usd(t.sizeUsd)}</td>
+                  <td>{usd(t.entry)}</td>
+                  <td className={p == null ? '' : p >= 0 ? 'hf-safe' : 'hf-danger'}>{p == null ? '—' : `${p >= 0 ? '+' : ''}$${p.toFixed(2)} gross`}</td>
+                  <td className="dim">{t.note}</td>
+                  <td><button className="btn" onClick={() => closeTrade(t.id)} disabled={busy}>close</button></td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {st && st.trades > 0 ? (
+        <>
+          <div className="usage-cards section-gap">
+            {[['Closed trades', st.trades, ''], ['Win rate', st.winRatePct, '%'], ['Expectancy / trade', st.expectancyUsd, '$'], ['Total P&L (net)', st.totalPnlUsd, '$'], ['Fees paid', st.totalFeesUsd, '$'], ['Max drawdown', st.maxDrawdownUsd, '$']].map(([l, v, u]) => (
+              <div className="panel" key={l} style={{ background: 'var(--panel-2)' }}>
+                <div className="label">{l}</div>
+                <div className="bigval" style={{ fontSize: 20 }}>{u === '$' ? `$${Number(v).toFixed(2)}` : `${v}${u}`}</div>
+              </div>
+            ))}
+          </div>
+          <table className="ulog section-gap">
+            <thead><tr><th>Closed</th><th>Side</th><th>Size</th><th>Entry</th><th>Exit</th><th>Fees</th><th>P&L net</th></tr></thead>
+            <tbody>
+              {book.closed.slice().reverse().slice(0, 30).map((t) => (
+                <tr key={t.id}>
+                  <td>{new Date(t.exitTs).toLocaleString()}</td>
+                  <td>{t.side}</td>
+                  <td>{usd(t.sizeUsd)}</td>
+                  <td>{usd(t.entry)}</td>
+                  <td>{usd(t.exit)}</td>
+                  <td>${t.feesUsd.toFixed(2)}</td>
+                  <td className={t.pnlUsd >= 0 ? 'hf-safe' : 'hf-danger'}>{t.pnlUsd >= 0 ? '+' : ''}${t.pnlUsd.toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : (
+        <div className="dim section-gap">No closed paper trades yet. The stats panel appears after your first round trip — and stays honest about fees.</div>
+      )}
+    </div>
+  )
+}
+
+function Trader({ S }) {
+  const [tf, setTf] = useState('5m')
+  const [cd, setCd] = useState(null)
+  const [cErr, setCErr] = useState(null)
+  const loadCandles = useCallback(async (which) => {
+    try { const d = await api(`candles?tf=${which}`); setCd(d); setCErr(null) } catch (e) { setCErr(e.message) }
+  }, [])
+  useEffect(() => {
+    setCd(null)
+    loadCandles(tf)
+    const t = setInterval(() => loadCandles(tf), 30_000)
+    return () => clearInterval(t)
+  }, [tf, loadCandles])
+
+  const candles = cd?.candles || []
+  const regime = useMemo(() => regimeRead(candles), [candles])
+  const closes = candles.map((c) => c.c)
+  const lastClose = closes[closes.length - 1]
+  const rsiLast = useMemo(() => { const r = rsi(closes, 14); return r[r.length - 1] }, [candles])
+  const atrLast = useMemo(() => { const a = atr(candles, 14); return a[a.length - 1] }, [candles])
+  const status = cd ? freshness(cd.meta?.fetchedAt, 120, Date.now(), true, !!cErr) : cErr ? 'down' : 'sync'
+  const btcStats = S.btchistory?.data?.stats
+
+  return (
+    <>
+      <div className="panel">
+        <div className="hfline" style={{ marginBottom: 10 }}>
+          <div className="modeswitch" role="group" aria-label="Timeframe">
+            {['1m', '3m', '5m', '15m'].map((t) => (
+              <button key={t} className={tf === t ? 'on' : ''} onClick={() => setTf(t)}>{t}</button>
+            ))}
+          </div>
+          <div className="sub num">BTC {usd(lastClose)} · RSI14 {fmt(rsiLast, 0)} · ATR14 {usd(atrLast)} ({Number.isFinite(atrLast) && Number.isFinite(lastClose) ? ((atrLast / lastClose) * 100).toFixed(2) : '—'}%)</div>
+          <div style={{ marginLeft: 'auto' }}><Badge status={status} at={cd?.meta?.fetchedAt} /></div>
+        </div>
+        <div className={`regimebanner ${regime.tone}`}>
+          <span className="regstate">{regime.state}</span>
+          <span className="regplain">{regime.plain}</span>
+        </div>
+        {cErr && <div className="sub" style={{ color: 'var(--down)', margin: '8px 0' }}>{cErr}</div>}
+        {candles.length > 0 ? <CandleChart candles={candles} /> : !cErr && <div className="sub">loading candles…</div>}
+        <div className="chartlegend">
+          <span style={{ color: CHART_COLORS.ema9 }}>— EMA9</span>
+          <span style={{ color: CHART_COLORS.ema21 }}>— EMA21</span>
+          <span style={{ color: CHART_COLORS.ema50 }}>— EMA50</span>
+          <span style={{ color: CHART_COLORS.vwap }}>— session VWAP (UTC-anchored)</span>
+          <span className="dim">· {cd?.venue || ''} · refreshes every 30s</span>
+        </div>
+      </div>
+
+      <div className="grid two section-gap">
+        <div className="panel">
+          <h2 className="sec">Volatility pockets · when this market actually moves</h2>
+          {candles.length ? <HourPockets candles={candles} /> : <div className="sub">waiting for candles…</div>}
+        </div>
+        <div className="panel">
+          <h2 className="sec">Projection · volatility-implied range, not a forecast</h2>
+          <ProjectionCone series={S.btchistory?.data?.series} stats={btcStats} />
+        </div>
+      </div>
+
+      <div className="panel section-gap">
+        <h2 className="sec">Paper trading ledger · prove it here first</h2>
+        <PaperPanel lastPrice={lastClose} />
+      </div>
+
+      <div className="panel section-gap automation">
+        <h2 className="sec">Automation · locked by design</h2>
+        <div className="sub" style={{ lineHeight: 1.6 }}>
+          Rule-based execution gets built only after this ledger earns it: <b>50+ closed paper trades</b>, <b>positive expectancy net of fees</b> across the sample, and a written max-daily-loss rule. Even then, the design is deterministic rules with hard size caps and a human confirmation per order — a discretionary AI holding wallet keys is not on this roadmap, because that is the account-killer architecture, not the edge. The lock isn't a limitation of the tool; it is the tool.
+        </div>
+      </div>
+    </>
+  )
+}
+
+const TABS = ['Trading Floor', 'Trader', 'Setups', 'Positions', 'Thesis Tracker', 'Data Sources', 'Token Usage']
 
 export default function App() {
   const { state, load, needToken, setNeedToken, loadAll } = useSources()
@@ -771,11 +1057,12 @@ export default function App() {
         ))}
       </nav>
       {tab === 0 && <TradingFloor S={state} load={load} />}
-      {tab === 1 && <Setups S={state} />}
-      {tab === 2 && <Positions S={state} load={load} />}
-      {tab === 3 && <Thesis S={state} load={load} />}
-      {tab === 4 && <Sources S={state} load={load} />}
-      {tab === 5 && <Usage />}
+      {tab === 1 && <Trader S={state} />}
+      {tab === 2 && <Setups S={state} />}
+      {tab === 3 && <Positions S={state} load={load} />}
+      {tab === 4 && <Thesis S={state} load={load} />}
+      {tab === 5 && <Sources S={state} load={load} />}
+      {tab === 6 && <Usage />}
     </div>
   )
 }

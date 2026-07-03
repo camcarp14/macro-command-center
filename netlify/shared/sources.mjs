@@ -176,3 +176,64 @@ export async function getBtcHistoryCached(store, { maxAgeMs = 6 * 3600 * 1000, r
     throw e
   }
 }
+
+// ---------------- Intraday candles (Kraken → Coinbase fallback) ----------------
+// Kraken public OHLC gives 720 candles at 1/5/15m — best free depth, US-OK.
+// Coinbase Exchange gives 300 at 60/300/900s as the fallback. 3m is built by
+// aggregating 1m server-side (neither venue serves 3m natively). The payload
+// always names the venue, same policy as the funding feed.
+const TF_MAP = { '1m': { kraken: 1, coinbase: 60, agg: 1 }, '3m': { kraken: 1, coinbase: 60, agg: 3 }, '5m': { kraken: 5, coinbase: 300, agg: 1 }, '15m': { kraken: 15, coinbase: 900, agg: 1 } }
+
+async function krakenCandles(interval) {
+  const res = await fetchWithTimeout(`https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=${interval}`, {}, 10000)
+  if (!res.ok) throw new Error(`Kraken HTTP ${res.status}`)
+  const body = await res.json()
+  if (body.error?.length) throw new Error(`Kraken: ${body.error.join(',')}`)
+  const key = Object.keys(body.result || {}).find((k) => k !== 'last')
+  const rows = body.result?.[key] || []
+  const candles = rows.map((r) => ({ t: Number(r[0]), o: Number(r[1]), h: Number(r[2]), l: Number(r[3]), c: Number(r[4]), v: Number(r[6]) }))
+  if (candles.length < 30) throw new Error(`Kraken returned only ${candles.length} candles`)
+  return candles
+}
+
+async function coinbaseCandles(granularity) {
+  const res = await fetchWithTimeout(`https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=${granularity}`, { headers: { 'user-agent': 'macro-command-center' } }, 10000)
+  if (!res.ok) throw new Error(`Coinbase HTTP ${res.status}`)
+  const rows = await res.json() // [time, low, high, open, close, volume], newest first
+  const candles = rows.map((r) => ({ t: Number(r[0]), o: Number(r[3]), h: Number(r[2]), l: Number(r[1]), c: Number(r[4]), v: Number(r[5]) })).sort((a, b) => a.t - b.t)
+  if (candles.length < 30) throw new Error(`Coinbase returned only ${candles.length} candles`)
+  return candles
+}
+
+export async function fetchCandles(tf = '5m') {
+  const cfg = TF_MAP[tf]
+  if (!cfg) throw new Error(`Unsupported timeframe "${tf}" — use 1m, 3m, 5m, or 15m`)
+  let candles, venue
+  try { candles = await krakenCandles(cfg.kraken); venue = 'kraken' }
+  catch (krakenErr) {
+    try { candles = await coinbaseCandles(cfg.coinbase); venue = 'coinbase (fallback)' }
+    catch (cbErr) { throw new Error(`Both candle venues failed — Kraken: ${krakenErr.message}; Coinbase: ${cbErr.message}`) }
+  }
+  return { tf, venue, candles } // aggregation to 3m happens in the endpoint via src/lib/ta.js
+}
+
+// Last trade price for paper-trade stamping (server-side, so entries/exits
+// are marked by the market, not by the client).
+export async function fetchSpotLast() {
+  try {
+    const res = await fetchWithTimeout('https://api.kraken.com/0/public/Ticker?pair=XBTUSD', {}, 8000)
+    if (!res.ok) throw new Error(`Kraken HTTP ${res.status}`)
+    const body = await res.json()
+    const key = Object.keys(body.result || {})[0]
+    const px = Number(body.result?.[key]?.c?.[0])
+    if (!Number.isFinite(px)) throw new Error('Kraken ticker: no price')
+    return { price: px, venue: 'kraken' }
+  } catch (e) {
+    const res = await fetchWithTimeout('https://api.exchange.coinbase.com/products/BTC-USD/ticker', { headers: { 'user-agent': 'macro-command-center' } }, 8000)
+    if (!res.ok) throw new Error(`Spot price failed on both venues (Kraken: ${e.message}; Coinbase HTTP ${res.status})`)
+    const body = await res.json()
+    const px = Number(body.price)
+    if (!Number.isFinite(px)) throw new Error('Coinbase ticker: no price')
+    return { price: px, venue: 'coinbase (fallback)' }
+  }
+}
