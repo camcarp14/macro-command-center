@@ -27,6 +27,11 @@ const HEALTHY = {
   aave: { collateralUsd: 50000, debtUsd: 20000, liquidationThresholdPct: 78, healthFactor: 1.82, noDebt: false, pool: '0x794a6135', meta: { source: 'aave', fetchedAt: NOW, latencyMs: 300 } },
   status: { sources: {}, snapshotCron: '*/30 * * * *', nextSnapshotAt: NOW + 60000, meta: { fetchedAt: NOW } },
   history: { snapshots: [], count: 0, meta: { source: 'history', fetchedAt: NOW } },
+  btchistory: {
+    stats: { last: 96412, ma50: 99000, ma200: 91000, distFromMA200Pct: 5.9, high365: 126000, drawdownFromHighPct: -23.5, realizedVol30Pct: 42.1, days: 365 },
+    series: [], meta: { source: 'btchistory', fetchedAt: NOW, cache: 'hit' },
+  },
+  triggers: { triggers: [{ ts: NOW - 86400000, key: 'contrarian_btc', name: 'Contrarian accumulation conditions — BTC', btc: 92000, score: 31 }], count: 1, meta: { fetchedAt: NOW } },
 }
 
 async function mockApi(page, overrides = {}) {
@@ -126,6 +131,25 @@ test('Market Read panel gives a plain-English, non-prescriptive description of c
   await expect(panel).toBeVisible()
   await expect(panel).toContainText('Not a recommendation to buy, sell, or hold', { ignoreCase: true })
   await expect(panel.getByText('Your position cushion')).toBeVisible()
+})
+
+test('Setups tab: checklist logic renders live values, fail-closed unknowns, and trigger history math', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Setups' }).click()
+  const contrarian = page.locator('.setupcard', { hasText: 'Contrarian accumulation' })
+  // F&G 61 in fixture → sentiment condition unmet; drawdown -23.5 → met
+  await expect(contrarian).toContainText('of 4 conditions met')
+  await expect(contrarian).toContainText('-23.5% from high')
+  // Trigger history computes since-trigger performance from live BTC (92000 → 96412 = +4.8%)
+  await expect(page.locator('.stress')).toContainText('+4.8%')
+  await expect(page.getByText(/not recommendations to buy, sell, or hold/i)).toBeVisible()
+})
+
+test('Trading Floor shows the setups strip pointing at the closest setup', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/')
+  await expect(page.getByText(/closest: .* \(\d of \d conditions\)/)).toBeVisible()
 })
 
 test('token gate appears when the API demands auth', async ({ page }) => {

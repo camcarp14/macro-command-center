@@ -146,3 +146,33 @@ function round(n, dp) {
   const f = 10 ** dp
   return Math.round(n * f) / f
 }
+
+// ---------------- CoinGecko (BTC daily history, 365d) ----------------
+export async function fetchBtcHistory() {
+  const headers = { accept: 'application/json' }
+  if (process.env.COINGECKO_API_KEY) headers['x-cg-demo-api-key'] = process.env.COINGECKO_API_KEY
+  const url = 'https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=365&interval=daily'
+  const res = await fetchWithTimeout(url, { headers }, 15000)
+  if (!res.ok) throw new Error(`CoinGecko history HTTP ${res.status}`)
+  const body = await res.json()
+  const prices = (body.prices || []).filter((p) => Array.isArray(p) && Number.isFinite(p[1]))
+  if (prices.length < 30) throw new Error(`CoinGecko history returned only ${prices.length} points`)
+  return { prices }
+}
+
+// Blob-cached wrapper (6h TTL) shared by the endpoint and the snapshot cron,
+// so we hit CoinGecko's history route at most ~4x/day.
+export async function getBtcHistoryCached(store, { maxAgeMs = 6 * 3600 * 1000, refresh = false } = {}) {
+  const cached = await store.get('btc_history', { type: 'json' }).catch(() => null)
+  const fresh = cached && Date.now() - cached.fetchedAt < maxAgeMs
+  if (fresh && !refresh) return { ...cached, cache: 'hit' }
+  try {
+    const { prices } = await fetchBtcHistory()
+    const payload = { fetchedAt: Date.now(), prices }
+    await store.setJSON('btc_history', payload)
+    return { ...payload, cache: refresh ? 'refreshed' : 'miss' }
+  } catch (e) {
+    if (cached) return { ...cached, cache: 'stale-after-error', staleError: String(e?.message || e) }
+    throw e
+  }
+}

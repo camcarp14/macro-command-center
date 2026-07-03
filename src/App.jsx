@@ -6,6 +6,7 @@ import {
 } from './lib/derive.js'
 import { buildFactSheet, validateNarrative, displayText } from './lib/narrative.js'
 import { buildMarketRead } from './lib/signals.js'
+import { evaluateSetups, setupsSummary } from './lib/setups.js'
 
 // Simple/Advanced is driven by one CSS class on the shell (see App()).
 // `.advanced-only` elements hide in Simple mode; `.simple-only` elements
@@ -56,13 +57,15 @@ function useSources() {
     for (const n of SOURCES) load(n)
     load('status')
     load('history', 'history?n=400')
+    load('btchistory')
   }, [load])
 
   useEffect(() => {
     loadAll()
     const t = setInterval(() => { for (const n of SOURCES) load(n); load('status') }, 60_000)
     const h = setInterval(() => load('history', 'history?n=400'), 5 * 60_000)
-    return () => { clearInterval(t); clearInterval(h) }
+    const bh = setInterval(() => load('btchistory'), 30 * 60_000)
+    return () => { clearInterval(t); clearInterval(h); clearInterval(bh) }
   }, [load, loadAll])
 
   return { state, load, needToken, setNeedToken, loadAll }
@@ -82,6 +85,8 @@ function buildMetrics(S) {
     m.curve_2s10s = curveSpread(fred.DGS10, fred.DGS2)?.value ?? null
     m.qt_13w = pctChangeNBack(fred.WALCL, 13)?.value ?? null
     m.policy_gap = Number.isFinite(m.dff) ? +(m.dff - 2.5).toFixed(3) : null
+    const oasObs = (fred.BAMLH0A0HYM2 || []).filter((o) => Number.isFinite(o.v))
+    m.hy_oas_4w_chg = oasObs.length > 20 ? +(oasObs[0].v - oasObs[20].v).toFixed(2) : null
   }
   const mk = S.market?.data
   if (mk) { m.btc = mk.btc; m.btc_24h = mk.btc24hPct }
@@ -236,6 +241,8 @@ function TradingFloor({ S, load }) {
 
       <MarketRead metrics={metrics} />
 
+      <SetupsStrip S={S} metrics={metrics} />
+
       {lastSeenLine && <div className="changed">{lastSeenLine}</div>}
 
       <div className="grid cards section-gap">
@@ -260,6 +267,94 @@ function TradingFloor({ S, load }) {
       </div>
 
       <Narrative metrics={{ ...metrics, score: scored.score }} />
+    </>
+  )
+}
+
+function SetupsStrip({ S, metrics }) {
+  const btcStats = S.btchistory?.data?.stats || null
+  const line = useMemo(() => setupsSummary(evaluateSetups({ m: metrics, btc: btcStats })), [metrics, btcStats])
+  if (!line) return null
+  return <div className="changed" style={{ borderLeftColor: line.includes('ACTIVE') ? 'var(--live)' : 'var(--line)' }}>{line} — details on the Setups tab.</div>
+}
+
+function Setups({ S }) {
+  const metrics = buildMetrics(S)
+  const btcStats = S.btchistory?.data?.stats || null
+  const evaluated = useMemo(() => evaluateSetups({ m: metrics, btc: btcStats }), [metrics, btcStats])
+  const [triggers, setTriggers] = useState(null)
+  const telegramOn = S.status?.data?.alerts?.telegram
+
+  useEffect(() => {
+    api('triggers').then((d) => setTriggers(d.triggers.slice().reverse())).catch(() => setTriggers([]))
+  }, [])
+
+  const btcNow = metrics.btc
+
+  return (
+    <>
+      <div className="panel">
+        <h2 className="sec">Setups · transparent condition checklists</h2>
+        <div className="sub" style={{ marginBottom: 12 }}>
+          A setup is ACTIVE when every listed condition currently holds — a historically notable state, described. Missing data never counts as met. Thresholds live in <span className="mono">src/lib/setups.js</span>.
+        </div>
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
+          {evaluated.map((su) => (
+            <div key={su.key} className="panel setupcard" style={{ background: 'var(--panel-2)' }}>
+              <div className="label">{su.stance}</div>
+              <div className="setupname">{su.name}</div>
+              <div className={`setupstate ${su.active ? 'live' : ''}`}>
+                {su.active ? 'ACTIVE' : `${su.met} of ${su.total} conditions met${su.unknown ? ` · ${su.unknown} unknown` : ''}`}
+              </div>
+              <ul className="conds">
+                {su.conditions.map((c, i) => (
+                  <li key={i} className={c.met === true ? 'met' : c.met === false ? 'unmet' : 'unk'}>
+                    <span className="tick">{c.met === true ? '✓' : c.met === false ? '✕' : '?'}</span>
+                    <span>{c.label}</span>
+                    <span className="cv num">{c.valueText}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="sub setupnote">{su.note}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel section-gap">
+        <h2 className="sec">Trigger history · the setups' report card</h2>
+        <div className="sub" style={{ marginBottom: 10 }}>
+          Every activation is logged with BTC's price at that moment (checked every 30 min by the snapshot job). Over time this is the evidence a setup has — or hasn't — earned trust. No track record yet means exactly that.
+        </div>
+        {triggers === null && <div className="sub">loading…</div>}
+        {triggers?.length === 0 && <div className="dim">No activations recorded yet. The snapshot job evaluates all setups every 30 minutes and will log the first one that fires.</div>}
+        {triggers?.length > 0 && (
+          <table className="stress">
+            <thead><tr><th>When</th><th>Setup</th><th>BTC at trigger</th><th>BTC now</th><th>Since trigger</th></tr></thead>
+            <tbody>
+              {triggers.map((t, i) => {
+                const chg = Number.isFinite(t.btc) && Number.isFinite(btcNow) ? ((btcNow - t.btc) / t.btc) * 100 : null
+                return (
+                  <tr key={i}>
+                    <td>{new Date(t.ts).toLocaleString()}</td>
+                    <td>{t.name}</td>
+                    <td>{usd(t.btc)}</td>
+                    <td>{usd(btcNow)}</td>
+                    <td className={chg == null ? '' : chg >= 0 ? 'hf-safe' : 'hf-danger'}>{chg == null ? '—' : `${chg >= 0 ? '+' : ''}${chg.toFixed(1)}%`}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+        <div className="provenance">
+          <Badge status={telegramOn ? 'live' : 'sync'} />
+          <span>{telegramOn ? 'Telegram alerts connected — activations and health-factor degradations ping you.' : 'Telegram alerts not configured — set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in Netlify env vars to get pinged on activations and HF degradation.'}</span>
+        </div>
+        <div className="caveat">
+          Conditions reads with honest historical framing — not recommendations to buy, sell, or hold, and not financial advice. Small trigger samples prove nothing; that's why the log exists.
+        </div>
+      </div>
     </>
   )
 }
@@ -524,6 +619,7 @@ const SOURCE_ROWS = [
   { key: 'funding', label: 'BTC perp funding (Deribit → Binance fallback)', endpoint: '/api/funding' },
   { key: 'feargreed', label: 'Fear & Greed (alternative.me)', endpoint: '/api/feargreed' },
   { key: 'aave', label: 'Aave V3 Arbitrum (on-chain read)', endpoint: '/api/aave' },
+  { key: 'btchistory', label: 'BTC daily history 365d (CoinGecko, 6h cache)', endpoint: '/api/btchistory' },
   { key: 'edgar', label: 'SEC EDGAR XBRL (weekly cache)', endpoint: '/api/edgar' },
   { key: 'snapshot', label: 'Snapshot logger (scheduled)', endpoint: 'cron' },
 ]
@@ -646,7 +742,7 @@ function TokenGate({ onDone }) {
   )
 }
 
-const TABS = ['Trading Floor', 'Positions', 'Thesis Tracker', 'Data Sources', 'Token Usage']
+const TABS = ['Trading Floor', 'Setups', 'Positions', 'Thesis Tracker', 'Data Sources', 'Token Usage']
 
 export default function App() {
   const { state, load, needToken, setNeedToken, loadAll } = useSources()
@@ -675,10 +771,11 @@ export default function App() {
         ))}
       </nav>
       {tab === 0 && <TradingFloor S={state} load={load} />}
-      {tab === 1 && <Positions S={state} load={load} />}
-      {tab === 2 && <Thesis S={state} load={load} />}
-      {tab === 3 && <Sources S={state} load={load} />}
-      {tab === 4 && <Usage />}
+      {tab === 1 && <Setups S={state} />}
+      {tab === 2 && <Positions S={state} load={load} />}
+      {tab === 3 && <Thesis S={state} load={load} />}
+      {tab === 4 && <Sources S={state} load={load} />}
+      {tab === 5 && <Usage />}
     </div>
   )
 }

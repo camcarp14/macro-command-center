@@ -81,3 +81,29 @@ export function sourceHandler(name, fn) {
     }
   }
 }
+
+// ---------------- Telegram alerts (optional) ----------------
+// Fire-and-forget descriptive alerts. Silently disabled unless both env
+// vars are set. Never throws into the caller's path.
+export function telegramConfigured() {
+  return !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID)
+}
+
+export async function sendTelegram(text) {
+  if (!telegramConfigured()) return { sent: false, reason: 'not configured' }
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text, disable_web_page_preview: true }),
+      },
+      8000
+    )
+    if (!res.ok) return { sent: false, reason: `HTTP ${res.status}` }
+    return { sent: true }
+  } catch (e) {
+    return { sent: false, reason: String(e?.message || e) }
+  }
+}

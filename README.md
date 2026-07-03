@@ -58,6 +58,16 @@ The header has a Simple/Advanced switch (persisted in your browser). **Simple** 
 
 Below the score, a "Market read · plain English" panel translates the same live metrics (funding rate, sentiment, credit spreads, curve shape, Fed stance, your position cushion) into plain descriptive states — CROWDED LONG, EXTREME FEAR, MARKET STRESSED, etc. Every threshold lives in `src/lib/signals.js`, in plain numbers, same transparency discipline as the score formula. **This is deliberately descriptive, not prescriptive** — it states what current conditions look like, never a buy/sell call. The panel's own footer repeats this disclaimer; treat it as informational context for your own judgment, not investment advice.
 
+## Setups, alerts, and the trigger log
+
+The **Setups tab** holds named, fully transparent condition checklists over the live data (thresholds in `src/lib/setups.js`): contrarian accumulation conditions, froth/de-risk conditions, the credit-regime-break bear-thesis trigger, and a policy-pivot risk window. A setup is ACTIVE only when *every* condition holds; missing data never counts as met (fail closed). Each card shows the live value behind every ✓/✕ and carries an honest historical framing note — these are conditions reads, never buy/sell instructions.
+
+**BTC historical context** comes from a new `/api/btchistory` endpoint (CoinGecko 365d dailies, 6h Blob cache): 200d MA distance, drawdown from the 365d high, 30d realized vol.
+
+**Alerts (optional):** set `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` and the 30-min snapshot job pings you when a setup activates/deactivates and when your Aave health factor drops into a worse band (WARN < 1.5, DANGER < 1.25, CRITICAL < 1.1). Alerts are deduplicated by state transition — you're pinged on the change, not every 30 minutes.
+
+**The trigger log** records BTC's price at every activation. The Setups tab shows what BTC did after each trigger. This is deliberate: it's the track record a setup must accumulate *before* it deserves capital or automation. On the roadmap-to-agentic question, the honest sequence is: codified setups → automatic paper record (this build) → review the evidence after enough triggers → only then rule-based execution with hard size caps and human confirmation. A discretionary LLM holding wallet keys is not on this roadmap on purpose.
+
 ## The narrative guarantee (the thing that matters most)
 
 The morning take can never contradict the screen, by construction:
