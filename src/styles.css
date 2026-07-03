@@ -193,3 +193,15 @@ h2.sec { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; col
 .hourbar span { font-family: var(--mono); font-size: 9px; color: var(--dim); transform: rotate(-45deg); white-space: nowrap; }
 svg.cone { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
 .automation { border-left: 3px solid var(--stale); }
+
+/* ---- Attention stack ---- */
+.attention { border-left: 3px solid var(--accent); }
+ol.attn { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; counter-reset: attn; }
+.attn-item { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 6px; background: var(--panel-2); }
+.attn-item.live { border-left-color: var(--live); } .attn-item.down { border-left-color: var(--down); }
+.attn-item.stale { border-left-color: var(--stale); } .attn-item.watch { border-left-color: var(--watch); }
+.attn-item.sync { border-left-color: var(--line); }
+.attn-title { font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: 0.03em; }
+.attn-item.live .attn-title { color: var(--live); } .attn-item.down .attn-title { color: var(--down); }
+.attn-item.stale .attn-title { color: var(--stale); } .attn-item.watch .attn-title { color: var(--watch); }
+.attn-body { color: var(--muted); font-size: 12.5px; line-height: 1.5; }

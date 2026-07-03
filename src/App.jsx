@@ -9,6 +9,7 @@ import { buildMarketRead } from './lib/signals.js'
 import { evaluateSetups, setupsSummary } from './lib/setups.js'
 import { ema, rsi, atr, vwapDaily, regimeRead, hourlyActivity } from './lib/ta.js'
 import { projectionCone } from './lib/projection.js'
+import { buildAttention, hfBandName } from './lib/attention.js'
 import { createChart } from 'lightweight-charts'
 
 // Simple/Advanced is driven by one CSS class on the shell (see App()).
@@ -176,7 +177,38 @@ function MetricCard({ label, value, sub, spark, status, at, source, dataAsOf }) 
 }
 
 /* ---------------- Tabs ---------------- */
-function TradingFloor({ S, load }) {
+
+function AttentionStack({ S, metrics, scored, band, changeLine }) {
+  const [regime, setRegime] = useState(null)
+  useEffect(() => {
+    let dead = false
+    const go = () => api('candles?tf=15m').then((d) => { if (!dead) setRegime(regimeRead(d.candles)) }).catch(() => { if (!dead) setRegime(null) })
+    go()
+    const t = setInterval(go, 5 * 60_000)
+    return () => { dead = true; clearInterval(t) }
+  }, [])
+  const btcStats = S.btchistory?.data?.stats || null
+  const setups = useMemo(() => evaluateSetups({ m: metrics, btc: btcStats }), [metrics, btcStats])
+  const items = useMemo(
+    () => buildAttention({ metrics, score: scored.score, bandName: band.name, setups, regime, changeLine }),
+    [metrics, scored.score, band.name, setups, regime, changeLine]
+  )
+  return (
+    <div className="panel attention">
+      <h2 className="sec">Right now</h2>
+      <ol className="attn">
+        {items.map((it, i) => (
+          <li key={i} className={`attn-item ${it.tone}`}>
+            <span className="attn-title">{it.title}</span>
+            <span className="attn-body">{it.body}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
+function Overview({ S, load }) {
   const snaps = S.history?.data?.snapshots || []
   const metrics = useMemo(() => withDeltas(buildMetrics(S), snaps), [S, snaps])
   const scored = useMemo(() => computeScore(metrics), [metrics])
@@ -204,7 +236,9 @@ function TradingFloor({ S, load }) {
 
   return (
     <>
-      <div className="panel">
+      <AttentionStack S={S} metrics={metrics} scored={scored} band={band} changeLine={lastSeenLine} />
+
+      <div className="panel section-gap">
         <div className="simple-only headline">{scoreHeadline(scored.score, band, scored.breakdown)}</div>
         <div className="scorewrap">
           <div className="scorebox">
@@ -244,10 +278,6 @@ function TradingFloor({ S, load }) {
 
       <MarketRead metrics={metrics} />
 
-      <SetupsStrip S={S} metrics={metrics} />
-
-      {lastSeenLine && <div className="changed">{lastSeenLine}</div>}
-
       <div className="grid cards section-gap">
         <MetricCard label="10Y Treasury" value={`${fmt(metrics.ust10y)}%`} sub={`2Y ${fmt(metrics.ust2y)}%`}
           spark={<Spark points={fredSpark('DGS10')} />} status={fS} at={fAt} source="FRED DGS10" dataAsOf={fredDate('DGS10')} />
@@ -274,29 +304,13 @@ function TradingFloor({ S, load }) {
   )
 }
 
-function SetupsStrip({ S, metrics }) {
-  const btcStats = S.btchistory?.data?.stats || null
-  const line = useMemo(() => setupsSummary(evaluateSetups({ m: metrics, btc: btcStats })), [metrics, btcStats])
-  if (!line) return null
-  return <div className="changed" style={{ borderLeftColor: line.includes('ACTIVE') ? 'var(--live)' : 'var(--line)' }}>{line} — details on the Setups tab.</div>
-}
-
-function Setups({ S }) {
+function SetupsGrid({ S }) {
   const metrics = buildMetrics(S)
   const btcStats = S.btchistory?.data?.stats || null
   const evaluated = useMemo(() => evaluateSetups({ m: metrics, btc: btcStats }), [metrics, btcStats])
-  const [triggers, setTriggers] = useState(null)
-  const telegramOn = S.status?.data?.alerts?.telegram
-
-  useEffect(() => {
-    api('triggers').then((d) => setTriggers(d.triggers.slice().reverse())).catch(() => setTriggers([]))
-  }, [])
-
-  const btcNow = metrics.btc
 
   return (
-    <>
-      <div className="panel">
+      <div className="panel section-gap">
         <h2 className="sec">Setups · transparent condition checklists</h2>
         <div className="sub" style={{ marginBottom: 12 }}>
           A setup is ACTIVE when every listed condition currently holds — a historically notable state, described. Missing data never counts as met. Thresholds live in <span className="mono">src/lib/setups.js</span>.
@@ -324,6 +338,18 @@ function Setups({ S }) {
         </div>
       </div>
 
+  )
+}
+
+function TriggerHistory({ S }) {
+  const metrics = buildMetrics(S)
+  const [triggers, setTriggers] = useState(null)
+  const telegramOn = S.status?.data?.alerts?.telegram
+  useEffect(() => {
+    api('triggers').then((d) => setTriggers(d.triggers.slice().reverse())).catch(() => setTriggers([]))
+  }, [])
+  const btcNow = metrics.btc
+  return (
       <div className="panel section-gap">
         <h2 className="sec">Trigger history · the setups' report card</h2>
         <div className="sub" style={{ marginBottom: 10 }}>
@@ -358,7 +384,6 @@ function Setups({ S }) {
           Conditions reads with honest historical framing — not recommendations to buy, sell, or hold, and not financial advice. Small trigger samples prove nothing; that's why the log exists.
         </div>
       </div>
-    </>
   )
 }
 
@@ -425,7 +450,7 @@ function Narrative({ metrics }) {
   )
 }
 
-function Positions({ S, load }) {
+function Position({ S, load }) {
   const a = S.aave?.data
   const btc = S.market?.data?.btc
   const status = srcStatus(S, 'aave')
@@ -433,8 +458,29 @@ function Positions({ S, load }) {
   const liqDd = liquidationDrawdown(hf)
   const liqPx = liquidationPrice(btc, hf)
   const hfClass = (v) => (v == null ? '' : v < 1 ? 'hf-danger' : v < 1.25 ? 'hf-warn' : 'hf-safe')
+  const btcStats = S.btchistory?.data?.stats
+  const band = hfBandName(hf)
+  const coneCheck = useMemo(() => {
+    const c = projectionCone({ lastPrice: btcStats?.last, realizedVolPct: btcStats?.realizedVol30Pct, horizonDays: 30 })
+    if (!c || !Number.isFinite(liqPx)) return null
+    const sm = c.summary
+    let zone, tone
+    if (liqPx < sm.dn95) { zone = 'below the 95% band'; tone = 'live' }
+    else if (liqPx < sm.bear1s) { zone = 'inside the 1–2σ zone'; tone = 'stale' }
+    else { zone = 'inside the ±1σ band'; tone = 'down' }
+    return { zone, tone, dn95: sm.dn95, bear1s: sm.bear1s }
+  }, [btcStats, liqPx])
 
   return (
+    <>
+    {a && !a.noDebt && Number.isFinite(hf) && (
+      <div className="panel" style={{ marginBottom: 12 }}>
+        <div className="headline" style={{ marginBottom: 0, paddingBottom: 0, borderBottom: 'none' }}>
+          Health factor {fmt(hf, 2)} ({band}) — liquidation sits ≈ {fmt(Math.abs(liquidationDrawdown(hf) * 100), 1)}% below spot at {usd(liqPx)}.
+          {coneCheck ? ` At current 30-day vol, that price is ${coneCheck.zone} of the one-month projection.` : ''}
+        </div>
+      </div>
+    )}
     <div className="grid two">
       <div className="panel">
         <h2 className="sec">Aave V3 · Arbitrum · WBTC position</h2>
@@ -512,6 +558,17 @@ function Positions({ S, load }) {
         )}
       </div>
     </div>
+
+    {a && !a.noDebt && Number.isFinite(liqPx) && (
+      <div className="panel section-gap">
+        <h2 className="sec">Liquidation vs. the volatility cone · one-month view</h2>
+        <ProjectionCone series={S.btchistory?.data?.series} stats={btcStats} overlay={{ price: liqPx, label: 'liquidation' }} />
+        <div className="caveat">
+          The dashed red line is your liquidation price drawn on the same volatility-implied ranges as the Trade Desk projection. "Below the 95% band" means a one-month move to liquidation would be an outside-the-cone event at current vol — which BTC produces more often than a normal distribution says it should. Same assumptions, same caveats: a distribution, not a forecast.
+        </div>
+      </div>
+    )}
+    </>
   )
 }
 
@@ -554,9 +611,30 @@ function Thesis({ S, load }) {
   }
 
   const edgarStale = edgar?.meta?.cache === 'stale-after-error'
+  const snaps = S.history?.data?.snapshots || []
+  const scoredNow = computeScore(metrics)
+  const bandNow = scoreBand(scoredNow.score)
+  const creditBreak = useMemo(() => evaluateSetups({ m: metrics, btc: S.btchistory?.data?.stats || null }).find((x) => x.key === 'credit_break'), [metrics, S.btchistory])
   return (
     <>
       <div className="panel">
+        <h2 className="sec">Thesis scoreboard · claims vs. tape</h2>
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+          <div className="panel" style={{ background: 'var(--panel-2)' }}>
+            <div className="label">Macro pressure now</div>
+            <div className="bigval" style={{ color: `var(--${bandNow.tone === 'watch' ? 'watch' : bandNow.tone})` }}>{scoredNow.score == null ? '—' : fmt(scoredNow.score, 1)} <span style={{ fontSize: 14 }}>{bandNow.name}</span></div>
+            <Spark points={snaps.map((x) => x.metrics?.score)} width={200} height={30} />
+          </div>
+          <div className="panel" style={{ background: 'var(--panel-2)' }}>
+            <div className="label">Credit regime break · thesis trigger</div>
+            <div className="bigval">{creditBreak ? `${creditBreak.met} / ${creditBreak.total}` : '—'} <span style={{ fontSize: 14 }}>conditions</span></div>
+            <div className="sub">{creditBreak?.active ? 'ACTIVE — the environment the thesis needs.' : creditBreak ? `Missing: ${creditBreak.conditions.filter((c) => c.met !== true).map((c) => c.valueText).join(' · ')}` : 'evaluating…'}</div>
+          </div>
+        </div>
+        <div className="caveat">The thesis is a claim about where these numbers go. This strip is the referee — full checklist on the Trade Desk.</div>
+      </div>
+
+      <div className="panel section-gap">
         <h2 className="sec">Thesis elements · live reads</h2>
         {THESIS.map((t, i) => (
           <div className="thesis-el" key={i}>
@@ -789,12 +867,12 @@ function CandleChart({ candles, height = 380 }) {
   return <div ref={ref} className="candlechart" style={{ width: '100%' }} />
 }
 
-function ProjectionCone({ series, stats }) {
+function ProjectionCone({ series, stats, overlay }) {
   const [horizon, setHorizon] = useState(7)
   const cone = useMemo(() => projectionCone({ lastPrice: stats?.last, realizedVolPct: stats?.realizedVol30Pct, horizonDays: horizon }), [stats, horizon])
   if (!cone) return <div className="sub">Projection needs BTC daily history — check the /api/btchistory row on Data Sources.</div>
   const hist = (series || []).slice(-90)
-  const all = [...hist.map(([, p]) => p), ...cone.days.flatMap((d) => [d.up95, d.dn95])]
+  const all = [...hist.map(([, p]) => p), ...cone.days.flatMap((d) => [d.up95, d.dn95]), ...(overlay && Number.isFinite(overlay.price) ? [overlay.price] : [])]
   const min = Math.min(...all), max = Math.max(...all)
   const W = 720, H = 240, PAD = 4
   const n = hist.length + cone.days.length - 1
@@ -827,6 +905,12 @@ function ProjectionCone({ series, stats }) {
         <polyline points={line('base')} fill="none" stroke="#8a93a6" strokeWidth="1" strokeDasharray="4 4" />
         <polyline points={line('bull1s')} fill="none" stroke="#3dd68c" strokeWidth="1" />
         <polyline points={line('bear1s')} fill="none" stroke="#e5484d" strokeWidth="1" />
+        {overlay && Number.isFinite(overlay.price) && (
+          <>
+            <line x1={PAD} x2={W - PAD} y1={Y(overlay.price)} y2={Y(overlay.price)} stroke="#e5484d" strokeWidth="1.5" strokeDasharray="6 4" />
+            <text x={PAD + 4} y={Y(overlay.price) - 5} fill="#e5484d" fontSize="11" fontFamily="ui-monospace, monospace">{overlay.label} {usd(overlay.price)}</text>
+          </>
+        )}
       </svg>
       <div className="caveat">{cone.caveat} Daily σ used: {cone.sigmaDailyPct}% (from 30d realized vol {fmt(stats?.realizedVol30Pct, 1)}%).</div>
     </div>
@@ -952,7 +1036,7 @@ function PaperPanel({ lastPrice }) {
   )
 }
 
-function Trader({ S }) {
+function TradeDesk({ S }) {
   const [tf, setTf] = useState('5m')
   const [cd, setCd] = useState(null)
   const [cErr, setCErr] = useState(null)
@@ -1002,6 +1086,8 @@ function Trader({ S }) {
         </div>
       </div>
 
+      <SetupsGrid S={S} />
+
       <div className="grid two section-gap">
         <div className="panel">
           <h2 className="sec">Volatility pockets · when this market actually moves</h2>
@@ -1012,6 +1098,8 @@ function Trader({ S }) {
           <ProjectionCone series={S.btchistory?.data?.series} stats={btcStats} />
         </div>
       </div>
+
+      <TriggerHistory S={S} />
 
       <div className="panel section-gap">
         <h2 className="sec">Paper trading ledger · prove it here first</h2>
@@ -1028,7 +1116,7 @@ function Trader({ S }) {
   )
 }
 
-const TABS = ['Trading Floor', 'Trader', 'Setups', 'Positions', 'Thesis Tracker', 'Data Sources', 'Token Usage']
+const TABS = ['Overview', 'Trade Desk', 'Position', 'Thesis', 'Data Sources', 'Token Usage']
 
 export default function App() {
   const { state, load, needToken, setNeedToken, loadAll } = useSources()
@@ -1056,13 +1144,12 @@ export default function App() {
           <button key={t} className={i === tab ? 'on' : ''} role="tab" aria-selected={i === tab} onClick={() => setTab(i)}>{t}</button>
         ))}
       </nav>
-      {tab === 0 && <TradingFloor S={state} load={load} />}
-      {tab === 1 && <Trader S={state} />}
-      {tab === 2 && <Setups S={state} />}
-      {tab === 3 && <Positions S={state} load={load} />}
-      {tab === 4 && <Thesis S={state} load={load} />}
-      {tab === 5 && <Sources S={state} load={load} />}
-      {tab === 6 && <Usage />}
+      {tab === 0 && <Overview S={state} load={load} />}
+      {tab === 1 && <TradeDesk S={state} />}
+      {tab === 2 && <Position S={state} load={load} />}
+      {tab === 3 && <Thesis S={state} load={load} />}
+      {tab === 4 && <Sources S={state} load={load} />}
+      {tab === 5 && <Usage />}
     </div>
   )
 }

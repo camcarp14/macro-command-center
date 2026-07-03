@@ -2,6 +2,8 @@
 
 A single-screen, live macro terminal tracking one specific thesis — AI-capex bubble via circular hyperscaler financing against a hawkish Fed — alongside a leveraged WBTC position on Aave V3 (Arbitrum). Every number on screen is a live fetch with a visible timestamp, or it is explicitly labeled stale/down. Nothing is interpolated, and the composite score is a fully exposed formula, not a black box.
 
+**Tab architecture — each tab answers one question.** *Overview*: "what needs my attention right now?" — a prioritized Attention Stack (position danger > active setups > one-condition-away setups > intraday regime > macro shift > an honest "nothing needs you"), then the score formula, plain-English market read, and metric grid. *Trade Desk*: "is there anything to do?" — chart + regime, setup checklists, trigger record, volatility pockets, projection cone, paper ledger, locked automation gate. *Position*: "am I safe?" — health factor, stress table, and your liquidation price drawn on the volatility cone. *Thesis*: "is the long game on track?" — a live scoreboard (pressure score + credit-break trigger progress), thesis elements, EDGAR, manual timeline.
+
 Stack: Vite + React (hooks, single-file `App.jsx`) · Netlify Functions v2 as the proxy/secrets layer for every external call · Netlify Blobs for snapshot history, the thesis timeline, source health, and the token ledger (zero extra infra; see "Swapping storage to Supabase" below) · Vitest + Playwright.
 
 ## Deploy (about five minutes)
@@ -46,11 +48,11 @@ Set `AAVE_WALLET_ADDRESS` and redeploy (or just re-set the env var — functions
 
 ## Adjusting the composite score
 
-All weighting lives in one place: **`src/lib/score.js` → `INPUTS`**. Each input has `[min, max]` normalization bounds, a `direction` (−1 inverts, e.g. deeper 2s10s inversion pushes the score *up*), and a `weight`. Weights must sum to 1.0 — the module throws at load if they don't, and `tests/score.test.js` will fail, so a bad edit can't ship quietly. The Trading Floor renders the full breakdown (value → normalized → weight → contribution) from this same module; there is no second copy of the math to drift.
+All weighting lives in one place: **`src/lib/score.js` → `INPUTS`**. Each input has `[min, max]` normalization bounds, a `direction` (−1 inverts, e.g. deeper 2s10s inversion pushes the score *up*), and a `weight`. Weights must sum to 1.0 — the module throws at load if they don't, and `tests/score.test.js` will fail, so a bad edit can't ship quietly. The Overview tab renders the full breakdown (value → normalized → weight → contribution) from this same module; there is no second copy of the math to drift.
 
 If a source is down, its input is **excluded and the remaining weights are renormalized** — and the UI says exactly that ("7/8 inputs · weights renormalized"), with the missing row shown as excluded. A degraded score is labeled degraded, never passed off as complete.
 
-## Trader tab (intraday)
+## Trade Desk tab (intraday)
 
 Candlestick charts (TradingView's open-source lightweight-charts) on **1m / 3m / 5m / 15m** BTC, refreshing every 30s without resetting your zoom. Data: **Kraken public OHLC primary** (720 candles of depth), Coinbase Exchange fallback, venue always named; 3m is aggregated server-side from 1m since neither venue serves it natively. Overlays: EMA 9/21/50, UTC-anchored session VWAP, volume; readout shows RSI14 and ATR14. All indicator math lives in `src/lib/ta.js` with unit tests against known values.
 
@@ -66,11 +68,11 @@ The header has a Simple/Advanced switch (persisted in your browser). **Simple** 
 
 ## Market Read panel
 
-Below the score, a "Market read · plain English" panel translates the same live metrics (funding rate, sentiment, credit spreads, curve shape, Fed stance, your position cushion) into plain descriptive states — CROWDED LONG, EXTREME FEAR, MARKET STRESSED, etc. Every threshold lives in `src/lib/signals.js`, in plain numbers, same transparency discipline as the score formula. **This is deliberately descriptive, not prescriptive** — it states what current conditions look like, never a buy/sell call. The panel's own footer repeats this disclaimer; treat it as informational context for your own judgment, not investment advice.
+On Overview below the score, a "Market read · plain English" panel translates the same live metrics (funding rate, sentiment, credit spreads, curve shape, Fed stance, your position cushion) into plain descriptive states — CROWDED LONG, EXTREME FEAR, MARKET STRESSED, etc. Every threshold lives in `src/lib/signals.js`, in plain numbers, same transparency discipline as the score formula. **This is deliberately descriptive, not prescriptive** — it states what current conditions look like, never a buy/sell call. The panel's own footer repeats this disclaimer; treat it as informational context for your own judgment, not investment advice.
 
 ## Setups, alerts, and the trigger log
 
-The **Setups tab** holds named, fully transparent condition checklists over the live data (thresholds in `src/lib/setups.js`): contrarian accumulation conditions, froth/de-risk conditions, the credit-regime-break bear-thesis trigger, and a policy-pivot risk window. A setup is ACTIVE only when *every* condition holds; missing data never counts as met (fail closed). Each card shows the live value behind every ✓/✕ and carries an honest historical framing note — these are conditions reads, never buy/sell instructions.
+The **Trade Desk** holds (right under the chart) named, fully transparent condition checklists over the live data (thresholds in `src/lib/setups.js`): contrarian accumulation conditions, froth/de-risk conditions, the credit-regime-break bear-thesis trigger, and a policy-pivot risk window. A setup is ACTIVE only when *every* condition holds; missing data never counts as met (fail closed). Each card shows the live value behind every ✓/✕ and carries an honest historical framing note — these are conditions reads, never buy/sell instructions.
 
 **BTC historical context** comes from a new `/api/btchistory` endpoint (CoinGecko 365d dailies, 6h Blob cache): 200d MA distance, drawdown from the 365d high, 30d realized vol.
 

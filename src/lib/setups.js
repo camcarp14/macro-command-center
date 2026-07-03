@@ -76,7 +76,7 @@ export function evaluateSetups(ctx) {
   })
 }
 
-// One-line summary for the Trading Floor strip.
+// One-line summary (used by tests; the Overview Attention Stack supersedes it in the UI).
 export function setupsSummary(evaluated) {
   if (!evaluated?.length) return null
   const active = evaluated.filter((e) => e.active)

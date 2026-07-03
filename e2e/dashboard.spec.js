@@ -112,7 +112,7 @@ test('faithful narrative renders with its validation provenance', async ({ page 
 test('positions tab: stress rungs and the liquidation line', async ({ page }) => {
   await mockApi(page)
   await page.goto('/')
-  await page.getByRole('tab', { name: 'Positions' }).click()
+  await page.getByRole('tab', { name: 'Position' }).click()
   await expect(page.locator('.stress')).toContainText('-40%')
   await expect(page.locator('.stress')).toContainText('LIQUIDATION LINE')
   await expect(page.getByText(/Assumes collateral is 100% BTC-correlated/)).toBeVisible()
@@ -143,7 +143,7 @@ test('Market Read panel gives a plain-English, non-prescriptive description of c
 test('Setups tab: checklist logic renders live values, fail-closed unknowns, and trigger history math', async ({ page }) => {
   await mockApi(page)
   await page.goto('/')
-  await page.getByRole('tab', { name: 'Setups' }).click()
+  await page.getByRole('tab', { name: 'Trade Desk' }).click()
   const contrarian = page.locator('.setupcard', { hasText: 'Contrarian accumulation' })
   // F&G 61 in fixture → sentiment condition unmet; drawdown -23.5 → met
   await expect(contrarian).toContainText('of 4 conditions met')
@@ -153,16 +153,20 @@ test('Setups tab: checklist logic renders live values, fail-closed unknowns, and
   await expect(page.getByText(/not recommendations to buy, sell, or hold/i)).toBeVisible()
 })
 
-test('Trading Floor shows the setups strip pointing at the closest setup', async ({ page }) => {
+test('Overview attention stack synthesizes subsystems in priority order', async ({ page }) => {
   await mockApi(page)
   await page.goto('/')
-  await expect(page.getByText(/closest: .* \(\d of \d conditions\)/)).toBeVisible()
+  const stack = page.locator('.attention')
+  await expect(stack).toBeVisible()
+  await expect(stack.locator('.attn-item').first()).toBeVisible()
+  // synthetic uptrend candles feed the 15m regime line into the stack
+  await expect(stack).toContainText('15m tape: TRENDING UP')
 })
 
 test('Trader tab: chart renders, regime reads the tape, projection carries its honesty label', async ({ page }) => {
   await mockApi(page)
   await page.goto('/')
-  await page.getByRole('tab', { name: 'Trader' }).click()
+  await page.getByRole('tab', { name: 'Trade Desk' }).click()
   await expect(page.locator('.regimebanner .regstate')).toHaveText('TRENDING UP') // clean synthetic uptrend
   await expect(page.locator('.candlechart canvas').first()).toBeVisible() // lightweight-charts mounted
   await expect(page.getByText(/not a forecast/i).first()).toBeVisible()
@@ -183,7 +187,7 @@ test('Paper ledger: opening a trade posts to the server and renders the open pos
     },
   })
   await page.goto('/')
-  await page.getByRole('tab', { name: 'Trader' }).click()
+  await page.getByRole('tab', { name: 'Trade Desk' }).click()
   await page.getByRole('button', { name: 'Open paper long' }).click()
   await expect(page.locator('table.stress')).toContainText('vwap reclaim')
   await expect(page.locator('table.stress')).toContainText('$96,400')
