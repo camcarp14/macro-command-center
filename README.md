@@ -50,6 +50,14 @@ All weighting lives in one place: **`src/lib/score.js` → `INPUTS`**. Each inpu
 
 If a source is down, its input is **excluded and the remaining weights are renormalized** — and the UI says exactly that ("7/8 inputs · weights renormalized"), with the missing row shown as excluded. A degraded score is labeled degraded, never passed off as complete.
 
+## Simple / Advanced toggle
+
+The header has a Simple/Advanced switch (persisted in your browser). **Simple** leads with a one-sentence plain-English headline for the score and hides the raw formula math (ranges, normalization, weights). **Advanced** shows everything — nothing is removed, Simple just reorders what's in front. Metric card labels also got plain-language clarifiers everywhere (e.g. "Corporate credit risk (HY OAS)" instead of just "HY OAS") regardless of mode.
+
+## Market Read panel
+
+Below the score, a "Market read · plain English" panel translates the same live metrics (funding rate, sentiment, credit spreads, curve shape, Fed stance, your position cushion) into plain descriptive states — CROWDED LONG, EXTREME FEAR, MARKET STRESSED, etc. Every threshold lives in `src/lib/signals.js`, in plain numbers, same transparency discipline as the score formula. **This is deliberately descriptive, not prescriptive** — it states what current conditions look like, never a buy/sell call. The panel's own footer repeats this disclaimer; treat it as informational context for your own judgment, not investment advice.
+
 ## The narrative guarantee (the thing that matters most)
 
 The morning take can never contradict the screen, by construction:

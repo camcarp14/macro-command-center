@@ -136,6 +136,22 @@ svg.spark .base { stroke: var(--line); stroke-width: 1; }
 .take-fail .label { color: var(--down); }
 .take-fail ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
 
+/* ---- Simple / Advanced mode ---- */
+.simple-mode .advanced-only { display: none !important; }
+.advanced-mode .simple-only { display: none !important; }
+.modeswitch { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; margin-left: auto; }
+.modeswitch button { background: transparent; border: 0; color: var(--muted); padding: 6px 12px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; border-right: 1px solid var(--line); }
+.modeswitch button:last-child { border-right: 0; }
+.modeswitch button.on { background: var(--panel-2); color: var(--accent); }
+header.top .clock { margin-left: 18px; }
+.headline { font-size: 15.5px; line-height: 1.5; color: var(--ink); margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--line); }
+
+/* ---- Market read signal cards ---- */
+.signal { display: flex; flex-direction: column; gap: 4px; }
+.sigstate { font-family: var(--mono); font-size: 18px; font-weight: 600; letter-spacing: 0.02em; }
+.sigstate.live { color: var(--live); } .sigstate.stale { color: var(--stale); } .sigstate.down { color: var(--down); } .sigstate.sync { color: var(--muted); }
+.sig-plain { line-height: 1.5; margin-top: 2px; }
+
 .gate { max-width: 380px; margin: 18vh auto; }
 .gate input { width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); border-radius: 6px; padding: 10px; font-family: var(--mono); margin: 10px 0; }
 .section-gap { margin-top: 14px; }

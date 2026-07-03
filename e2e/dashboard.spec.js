@@ -106,6 +106,28 @@ test('positions tab: stress rungs and the liquidation line', async ({ page }) =>
   await expect(page.getByText(/Assumes collateral is 100% BTC-correlated/)).toBeVisible()
 })
 
+test('Simple mode hides the raw formula math, Advanced restores it, choice persists on reload', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/')
+  // Simple is the default: plain headline visible, technical columns hidden.
+  await expect(page.locator('.headline')).toBeVisible()
+  await expect(page.getByText('Range → norm')).toBeHidden()
+  await page.getByRole('button', { name: 'Advanced' }).click()
+  await expect(page.getByText('Range → norm')).toBeVisible()
+  await expect(page.locator('.headline')).toBeHidden()
+  await page.reload()
+  await expect(page.getByText('Range → norm')).toBeVisible() // choice persisted via localStorage
+})
+
+test('Market Read panel gives a plain-English, non-prescriptive description of conditions', async ({ page }) => {
+  await mockApi(page)
+  await page.goto('/')
+  const panel = page.locator('.panel', { hasText: 'Market read · plain English' })
+  await expect(panel).toBeVisible()
+  await expect(panel).toContainText('Not a recommendation to buy, sell, or hold', { ignoreCase: true })
+  await expect(panel.getByText('Your position cushion')).toBeVisible()
+})
+
 test('token gate appears when the API demands auth', async ({ page }) => {
   await page.route('**/api/**', (route) => route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"unauthorized"}' }))
   await page.goto('/')

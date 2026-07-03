@@ -5,6 +5,20 @@ import {
   stressHealthFactor, liquidationDrawdown, liquidationPrice, STRESS_SCENARIOS, diffLine,
 } from './lib/derive.js'
 import { buildFactSheet, validateNarrative, displayText } from './lib/narrative.js'
+import { buildMarketRead } from './lib/signals.js'
+
+// Simple/Advanced is driven by one CSS class on the shell (see App()).
+// `.advanced-only` elements hide in Simple mode; `.simple-only` elements
+// hide in Advanced mode. Nothing is removed either way — Simple just
+// leads with plain sentences instead of the raw formula table.
+
+function scoreHeadline(score, band, breakdown) {
+  if (score == null) return 'Not enough live data yet to compute a score.'
+  const top = [...(breakdown || [])].filter((b) => b.included).sort((a, b) => b.contribution - a.contribution)[0]
+  const driver = top ? ` — ${top.label} is doing the most to push it there.` : ''
+  const bandPlain = { benign: 'calm', tightening: 'starting to tighten', elevated: 'elevated', stress: 'showing real stress' }[band.name] || band.name
+  return `Conditions read ${bandPlain} right now (${fmt(score, 0)}/100)${driver}`
+}
 
 /* ---------------- API plumbing ---------------- */
 function getToken() { return sessionStorage.getItem('mcc_token') || '' }
@@ -183,6 +197,7 @@ function TradingFloor({ S, load }) {
   return (
     <>
       <div className="panel">
+        <div className="simple-only headline">{scoreHeadline(scored.score, band, scored.breakdown)}</div>
         <div className="scorewrap">
           <div className="scorebox">
             <div className="label">Macro pressure score · 0–100</div>
@@ -190,7 +205,7 @@ function TradingFloor({ S, load }) {
               {scored.score == null ? '—' : fmt(scored.score, 1)}
             </div>
             <div className="scoreband" style={{ color: `var(--${band.tone === 'watch' ? 'watch' : band.tone})` }}>{band.name}</div>
-            <div className="sub" style={{ marginTop: 8 }}>
+            <div className="sub advanced-only" style={{ marginTop: 8 }}>
               {scored.inputsUsed}/{scored.inputsTotal} inputs{scored.renormalized ? ' · weights renormalized' : ''}
             </div>
             <Spark points={snapSpark('score')} width={190} height={36} />
@@ -198,15 +213,15 @@ function TradingFloor({ S, load }) {
           </div>
           <table className="ledger" aria-label="score formula">
             <thead>
-              <tr><th>Input</th><th className="r">Value</th><th className="r hide-sm">Range → norm</th><th className="r">Weight</th><th className="r">Contrib</th><th className="hide-sm"></th></tr>
+              <tr><th>Input</th><th className="r">Value</th><th className="r hide-sm advanced-only">Range → norm</th><th className="r advanced-only">Weight</th><th className="r">Contrib</th><th className="hide-sm"></th></tr>
             </thead>
             <tbody>
               {scored.breakdown.map((b) => (
                 <tr key={b.key} className={b.included ? '' : 'excluded'} title={b.note}>
                   <td>{b.label}</td>
                   <td className="r">{b.included ? `${fmt(b.value, 2)}${b.unit}` : 'source down'}</td>
-                  <td className="r hide-sm">{b.included ? `[${b.min}…${b.max}]${b.direction === -1 ? ' inv' : ''} → ${fmt(b.normalized, 1)}` : '—'}</td>
-                  <td className="r">{(b.effectiveWeight * 100).toFixed(1)}%{b.effectiveWeight !== b.baseWeight && b.included ? '*' : ''}</td>
+                  <td className="r hide-sm advanced-only">{b.included ? `[${b.min}…${b.max}]${b.direction === -1 ? ' inv' : ''} → ${fmt(b.normalized, 1)}` : '—'}</td>
+                  <td className="r advanced-only">{(b.effectiveWeight * 100).toFixed(1)}%{b.effectiveWeight !== b.baseWeight && b.included ? '*' : ''}</td>
                   <td className="r">{b.included ? `+${fmt(b.contribution, 2)}` : 'excluded'}</td>
                   <td className="hide-sm"><div className="cbar"><i style={{ width: `${b.included ? Math.min(100, (b.contribution / 25) * 100) : 0}%` }} /></div></td>
                 </tr>
@@ -214,29 +229,31 @@ function TradingFloor({ S, load }) {
             </tbody>
           </table>
         </div>
-        <div className="formula-note">
+        <div className="formula-note advanced-only">
           score = Σ weightᵢ × normᵢ(valueᵢ) · norm clamps value into [min…max] → 0–100 ("inv" flips direction) · missing sources are excluded and remaining weights renormalized (*) — shown, never hidden. Edit weights in <span className="mono">src/lib/score.js</span>.
         </div>
       </div>
+
+      <MarketRead metrics={metrics} />
 
       {lastSeenLine && <div className="changed">{lastSeenLine}</div>}
 
       <div className="grid cards section-gap">
         <MetricCard label="10Y Treasury" value={`${fmt(metrics.ust10y)}%`} sub={`2Y ${fmt(metrics.ust2y)}%`}
           spark={<Spark points={fredSpark('DGS10')} />} status={fS} at={fAt} source="FRED DGS10" dataAsOf={fredDate('DGS10')} />
-        <MetricCard label="2s10s spread" value={`${fmt(metrics.curve_2s10s)}pp`} sub={metrics.curve_2s10s < 0 ? 'inverted' : 'positive'}
+        <MetricCard label="Yield curve slope (2s10s)" value={`${fmt(metrics.curve_2s10s)}pp`} sub={metrics.curve_2s10s < 0 ? 'inverted — short rates above long' : 'normal — long rates above short'}
           spark={<Spark points={snapSpark('curve_2s10s')} />} status={fS} at={fAt} source="FRED DGS10−DGS2" dataAsOf={fredDate('DGS10')} />
         <MetricCard label="Fed funds (eff.)" value={`${fmt(metrics.dff)}%`} sub={`vs 2.5 neutral: +${fmt(metrics.policy_gap)}pp`}
           spark={<Spark points={fredSpark('DFF')} />} status={fS} at={fAt} source="FRED DFF" dataAsOf={fredDate('DFF')} />
-        <MetricCard label="Broad dollar index" value={fmt(metrics.dollar)} sub="DXY proxy"
+        <MetricCard label="Dollar strength (DXY-style)" value={fmt(metrics.dollar)} sub="Broad trade-weighted index"
           spark={<Spark points={fredSpark('DTWEXBGS')} />} status={fS} at={fAt} source="FRED DTWEXBGS" dataAsOf={fredDate('DTWEXBGS')} />
-        <MetricCard label="HY credit spread" value={`${fmt(metrics.hy_oas)}%`} sub="ICE BofA HY OAS"
+        <MetricCard label="Corporate credit risk (HY OAS)" value={`${fmt(metrics.hy_oas)}%`} sub="Extra yield junk bonds pay over Treasuries"
           spark={<Spark points={fredSpark('BAMLH0A0HYM2')} />} status={fS} at={fAt} source="FRED BAMLH0A0HYM2" dataAsOf={fredDate('BAMLH0A0HYM2')} />
-        <MetricCard label="Fed balance sheet" value={Number.isFinite(metrics.walcl) ? `$${(metrics.walcl / 1e6).toFixed(2)}T` : '—'} sub={`13w Δ ${fmt(metrics.qt_13w)}%`}
+        <MetricCard label="Fed balance sheet (liquidity)" value={Number.isFinite(metrics.walcl) ? `$${(metrics.walcl / 1e6).toFixed(2)}T` : '—'} sub={`13w Δ ${fmt(metrics.qt_13w)}% — shrinking = liquidity drain`}
           spark={<Spark points={fredSpark('WALCL')} />} status={fS} at={fAt} source="FRED WALCL" dataAsOf={fredDate('WALCL')} />
         <MetricCard label="BTC spot" value={usd(metrics.btc)} sub={`24h ${fmt(metrics.btc_24h)}%`}
           spark={<Spark points={snapSpark('btc')} />} status={srcStatus(S, 'market')} at={S.market?.fetchedAt} source="CoinGecko" />
-        <MetricCard label="BTC perp funding" value={`${fmt(metrics.funding_ann)}% ann.`} sub={`8h ${Number.isFinite(metrics.funding_8h) ? (metrics.funding_8h * 100).toFixed(4) : '—'}% · ${metrics.funding_venue || ''}`}
+        <MetricCard label="Leverage cost (BTC funding)" value={`${fmt(metrics.funding_ann)}% ann.`} sub={`8h ${Number.isFinite(metrics.funding_8h) ? (metrics.funding_8h * 100).toFixed(4) : '—'}% · ${metrics.funding_venue || ''}`}
           spark={<Spark points={snapSpark('funding_ann')} />} status={srcStatus(S, 'funding')} at={S.funding?.fetchedAt} source={metrics.funding_venue === 'binance' ? 'Binance (fallback)' : 'Deribit'} />
         <MetricCard label="Fear & Greed" value={fmt(metrics.fear_greed, 0)} sub={S.feargreed?.data?.classification || ''}
           spark={<Spark points={snapSpark('fear_greed')} />} status={srcStatus(S, 'feargreed')} at={S.feargreed?.fetchedAt} source="alternative.me" />
@@ -244,6 +261,28 @@ function TradingFloor({ S, load }) {
 
       <Narrative metrics={{ ...metrics, score: scored.score }} />
     </>
+  )
+}
+
+function MarketRead({ metrics }) {
+  const reads = useMemo(() => buildMarketRead(metrics), [metrics])
+  if (reads.length === 0) return null
+  return (
+    <div className="panel section-gap">
+      <h2 className="sec">Market read · plain English</h2>
+      <div className="grid cards">
+        {reads.map((r) => (
+          <div className="panel signal" key={r.key} style={{ background: 'var(--panel-2)' }}>
+            <div className="label">{r.label}</div>
+            <div className={`sigstate ${r.tone}`}>{r.state}</div>
+            <div className="sub sig-plain">{r.plain}</div>
+          </div>
+        ))}
+      </div>
+      <div className="caveat section-gap">
+        Descriptive read of the live data above at the thresholds in <span className="mono">src/lib/signals.js</span> — not a recommendation to buy, sell, or hold anything. Not financial advice; I'm not a licensed advisor. Markets can stay extreme longer than these labels suggest.
+      </div>
+    </div>
   )
 }
 
@@ -613,15 +652,21 @@ export default function App() {
   const { state, load, needToken, setNeedToken, loadAll } = useSources()
   const [tab, setTab] = useState(0)
   const [clock, setClock] = useState(new Date())
+  const [simple, setSimple] = useState(() => localStorage.getItem('mcc_mode') !== 'advanced')
   useEffect(() => { const t = setInterval(() => setClock(new Date()), 1000); return () => clearInterval(t) }, [])
+  useEffect(() => { localStorage.setItem('mcc_mode', simple ? 'simple' : 'advanced') }, [simple])
 
   if (needToken) return <div className="shell"><TokenGate onDone={() => { setNeedToken(false); loadAll() }} /></div>
 
   return (
-    <div className="shell">
+    <div className={`shell ${simple ? 'simple-mode' : 'advanced-mode'}`}>
       <header className="top">
         <div className="brand">Macro <b>Command Center</b></div>
         <div className="sub">every number live or labeled — nothing interpolated</div>
+        <div className="modeswitch" role="group" aria-label="Detail level">
+          <button className={simple ? 'on' : ''} onClick={() => setSimple(true)}>Simple</button>
+          <button className={!simple ? 'on' : ''} onClick={() => setSimple(false)}>Advanced</button>
+        </div>
         <div className="clock num">{clock.toLocaleString([], { hour12: false })}</div>
       </header>
       <nav className="tabs" role="tablist">
