@@ -1,239 +1,192 @@
-// Every external data source, as a plain async function. The HTTP endpoints
-// wrap these; the scheduled snapshot imports them directly (no self-HTTP,
-// no auth loopback). All keys stay server-side.
-import { createPublicClient, http, parseAbi } from 'viem'
+// Upstream market-data adapters. Design rules:
+//   - Parsers are PURE functions over raw upstream payloads → fixture-tested.
+//   - Each fetcher throws on any failure; chains try the next source.
+//   - Every result names its source so the UI can say where a number came from.
+// v1 is keyless: Yahoo (delayed ~15m) → Stooq (EOD) for MSTR;
+// Binance → Coinbase → CoinGecko for BTC. A paid key drops in here later.
 import { fetchWithTimeout } from './util.mjs'
 
-// ---------------- FRED ----------------
-export const FRED_SERIES = ['DGS10', 'DGS2', 'DFF', 'DTWEXBGS', 'BAMLH0A0HYM2', 'WALCL']
+const UA = { 'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36' }
 
-export async function fetchFred(seriesList = FRED_SERIES, limit = 130) {
-  const key = process.env.FRED_API_KEY
-  if (!key) throw new Error('FRED_API_KEY is not configured')
-  const bad = seriesList.filter((s) => !FRED_SERIES.includes(s))
-  if (bad.length) throw new Error(`Series not in whitelist: ${bad.join(',')}`)
-
-  const results = await Promise.all(
-    seriesList.map(async (id) => {
-      const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=${key}&file_type=json&sort_order=desc&limit=${limit}`
-      const res = await fetchWithTimeout(url)
-      if (!res.ok) throw new Error(`FRED ${id} HTTP ${res.status}`)
-      const body = await res.json()
-      const obs = (body.observations || []).map((o) => ({ d: o.date, v: o.value === '.' ? null : Number(o.value) }))
-      return [id, obs]
-    })
-  )
-  return { series: Object.fromEntries(results) }
+async function getJson(url, opts = {}, timeoutMs = 8000) {
+  const res = await fetchWithTimeout(url, { ...opts, headers: { accept: 'application/json', ...UA, ...(opts.headers || {}) } }, timeoutMs)
+  if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`)
+  return res.json()
 }
 
-// ---------------- CoinGecko (BTC spot) ----------------
-export async function fetchMarket() {
-  const headers = { accept: 'application/json' }
-  if (process.env.COINGECKO_API_KEY) headers['x-cg-demo-api-key'] = process.env.COINGECKO_API_KEY
-  const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=true&include_24hr_change=true&include_last_updated_at=true'
-  const res = await fetchWithTimeout(url, { headers })
-  if (!res.ok) throw new Error(`CoinGecko HTTP ${res.status}`)
-  const body = await res.json()
-  const b = body.bitcoin
-  if (!b || !Number.isFinite(b.usd)) throw new Error('CoinGecko returned no bitcoin price')
+async function getText(url, timeoutMs = 8000) {
+  const res = await fetchWithTimeout(url, { headers: UA }, timeoutMs)
+  if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`)
+  return res.text()
+}
+
+/* ================= parsers (pure, fixture-tested) ================= */
+
+export function parseYahooChart(raw) {
+  const r = raw?.chart?.result?.[0]
+  if (!r || !Array.isArray(r.timestamp)) throw new Error('yahoo: malformed chart payload')
+  const q = r.indicators?.quote?.[0]
+  if (!q) throw new Error('yahoo: missing quote indicators')
+  const candles = []
+  for (let i = 0; i < r.timestamp.length; i++) {
+    const o = q.open?.[i]; const h = q.high?.[i]; const l = q.low?.[i]; const c = q.close?.[i]
+    if (![o, h, l, c].every(Number.isFinite)) continue // drop null rows (halts, partial bars)
+    candles.push({ t: r.timestamp[i], o, h, l, c, v: Number.isFinite(q.volume?.[i]) ? q.volume[i] : null })
+  }
+  const meta = r.meta || {}
+  let marketState = null
+  const reg = meta.currentTradingPeriod?.regular
+  if (reg && Number.isFinite(meta.regularMarketTime)) {
+    marketState = meta.regularMarketTime >= reg.start && meta.regularMarketTime < reg.end ? 'open' : 'closed'
+  }
   return {
-    btc: b.usd,
-    btc24hPct: Number.isFinite(b.usd_24h_change) ? round(b.usd_24h_change, 2) : null,
-    marketCap: b.usd_market_cap ?? null,
-    dataAsOf: b.last_updated_at ? b.last_updated_at * 1000 : null,
+    candles,
+    price: Number.isFinite(meta.regularMarketPrice) ? meta.regularMarketPrice : null,
+    prevClose: Number.isFinite(meta.chartPreviousClose) ? meta.chartPreviousClose
+      : Number.isFinite(meta.previousClose) ? meta.previousClose : null,
+    dayHigh: Number.isFinite(meta.regularMarketDayHigh) ? meta.regularMarketDayHigh : null,
+    dayLow: Number.isFinite(meta.regularMarketDayLow) ? meta.regularMarketDayLow : null,
+    marketState,
   }
 }
 
-// ---------------- BTC perp funding ----------------
-// Primary: Deribit public ticker (accessible from US infra).
-// Fallback: Binance premiumIndex — documented as geo-blocked (HTTP 451) from
-// US IPs, which is where Netlify functions typically run; kept for non-US
-// self-hosting. The payload always names which venue produced the number.
-export async function fetchFunding() {
-  const attempts = []
+export function parseStooqDaily(csvText) {
+  const lines = String(csvText).trim().split('\n')
+  if (lines.length < 2 || !lines[0].toLowerCase().startsWith('date,')) throw new Error('stooq: malformed CSV')
+  const candles = []
+  for (const line of lines.slice(1)) {
+    const [date, o, h, l, c, v] = line.split(',')
+    const nums = [o, h, l, c].map(Number)
+    if (!nums.every(Number.isFinite)) continue
+    candles.push({ t: Date.parse(`${date}T00:00:00Z`) / 1000, o: nums[0], h: nums[1], l: nums[2], c: nums[3], v: Number(v) || null })
+  }
+  if (candles.length === 0) throw new Error('stooq: no rows parsed')
+  return { candles }
+}
+
+export function parseBinanceKlines(raw) {
+  if (!Array.isArray(raw)) throw new Error('binance: malformed klines')
+  return raw.map((k) => ({
+    t: Math.floor(k[0] / 1000), o: Number(k[1]), h: Number(k[2]), l: Number(k[3]), c: Number(k[4]), v: Number(k[5]),
+  })).filter((c) => [c.o, c.h, c.l, c.c].every(Number.isFinite))
+}
+
+export function parseBinance24hr(raw) {
+  const price = Number(raw?.lastPrice)
+  if (!Number.isFinite(price)) throw new Error('binance: malformed 24hr ticker')
+  const chg = Number(raw?.priceChangePercent)
+  return { price, changePct24h: Number.isFinite(chg) ? chg : null }
+}
+
+export function parseCoinbaseCandles(raw) {
+  if (!Array.isArray(raw)) throw new Error('coinbase: malformed candles')
+  // Coinbase Exchange: [time, low, high, open, close, volume], NEWEST FIRST.
+  return raw.map((k) => ({ t: k[0], o: k[3], h: k[2], l: k[1], c: k[4], v: k[5] }))
+    .filter((c) => [c.o, c.h, c.l, c.c].every(Number.isFinite))
+    .sort((a, b) => a.t - b.t)
+}
+
+export function parseCoinbaseSpot(raw) {
+  const price = Number(raw?.data?.amount)
+  if (!Number.isFinite(price)) throw new Error('coinbase: malformed spot')
+  return { price, changePct24h: null }
+}
+
+export function parseCoingeckoOhlc(raw) {
+  if (!Array.isArray(raw)) throw new Error('coingecko: malformed ohlc')
+  return raw.map((k) => ({ t: Math.floor(k[0] / 1000), o: k[1], h: k[2], l: k[3], c: k[4], v: null }))
+    .filter((c) => [c.o, c.h, c.l, c.c].every(Number.isFinite))
+}
+
+export function parseCoingeckoSimple(raw) {
+  const price = raw?.bitcoin?.usd
+  if (!Number.isFinite(price)) throw new Error('coingecko: malformed simple price')
+  const chg = raw?.bitcoin?.usd_24h_change
+  return { price, changePct24h: Number.isFinite(chg) ? chg : null }
+}
+
+/* ================= fetchers with fallback chains ================= */
+
+const YA = 'https://query1.finance.yahoo.com/v8/finance/chart'
+
+/** MSTR quote: Yahoo delayed feed → Stooq EOD. Result names its honesty. */
+export async function mstrQuote() {
   try {
-    const res = await fetchWithTimeout('https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL')
-    if (!res.ok) throw new Error(`Deribit HTTP ${res.status}`)
-    const body = await res.json()
-    const r = body.result
-    if (!r || !Number.isFinite(r.funding_8h)) throw new Error('Deribit ticker missing funding_8h')
+    const parsed = parseYahooChart(await getJson(`${YA}/MSTR?interval=1m&range=1d`))
+    if (parsed.price == null) throw new Error('yahoo: no regularMarketPrice')
+    const changePct = parsed.prevClose ? ((parsed.price / parsed.prevClose) - 1) * 100 : null
     return {
-      venue: 'deribit',
-      instrument: 'BTC-PERPETUAL',
-      funding8h: r.funding_8h,                    // decimal per 8h, e.g. 0.0001
-      fundingAnnualizedPct: round(r.funding_8h * 3 * 365 * 100, 2),
-      markPrice: r.mark_price ?? null,
-      indexPrice: r.index_price ?? null,
-      openInterest: r.open_interest ?? null,
-      dataAsOf: r.timestamp ?? null,
-      sourceDetail: 'deribit',
+      symbol: 'MSTR', price: parsed.price, prevClose: parsed.prevClose,
+      changePct: changePct == null ? null : Math.round(changePct * 100) / 100,
+      dayHigh: parsed.dayHigh, dayLow: parsed.dayLow, marketState: parsed.marketState,
+      delayedMin: 15, kind: 'delayed', sourceDetail: 'yahoo',
     }
-  } catch (e) {
-    attempts.push(`deribit: ${e.message}`)
-  }
-  try {
-    const res = await fetchWithTimeout('https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT')
-    if (!res.ok) throw new Error(`Binance HTTP ${res.status}${res.status === 451 ? ' (geo-restricted)' : ''}`)
-    const r = await res.json()
-    const f = Number(r.lastFundingRate)
-    if (!Number.isFinite(f)) throw new Error('Binance premiumIndex missing lastFundingRate')
+  } catch (yahooErr) {
+    const { candles } = parseStooqDaily(await getText('https://stooq.com/q/d/l/?s=mstr.us&i=d'))
+    const last = candles[candles.length - 1]
+    const prev = candles[candles.length - 2]
     return {
-      venue: 'binance',
-      instrument: 'BTCUSDT-PERP',
-      funding8h: f,
-      fundingAnnualizedPct: round(f * 3 * 365 * 100, 2),
-      markPrice: Number(r.markPrice) || null,
-      indexPrice: Number(r.indexPrice) || null,
-      openInterest: null,
-      dataAsOf: r.time ?? null,
-      sourceDetail: 'binance-fallback',
+      symbol: 'MSTR', price: last.c, prevClose: prev?.c ?? null,
+      changePct: prev ? Math.round(((last.c / prev.c) - 1) * 10000) / 100 : null,
+      dayHigh: last.h, dayLow: last.l, marketState: null,
+      delayedMin: null, kind: 'eod', sourceDetail: `stooq (yahoo failed: ${yahooErr.message})`,
     }
-  } catch (e) {
-    attempts.push(`binance: ${e.message}`)
-  }
-  throw new Error(`All funding venues failed — ${attempts.join(' | ')}`)
-}
-
-// ---------------- Fear & Greed ----------------
-export async function fetchFearGreed() {
-  const res = await fetchWithTimeout('https://api.alternative.me/fng/?limit=1&format=json')
-  if (!res.ok) throw new Error(`alternative.me HTTP ${res.status}`)
-  const body = await res.json()
-  const d = body?.data?.[0]
-  const v = Number(d?.value)
-  if (!Number.isFinite(v)) throw new Error('Fear & Greed returned no value')
-  return { value: v, classification: d.value_classification ?? null, dataAsOf: d.timestamp ? Number(d.timestamp) * 1000 : null }
-}
-
-// ---------------- Aave V3 (Arbitrum) ----------------
-// Aave V3 Pool proxy on Arbitrum One (verified on Arbiscan, "Aave: Pool V3").
-// getUserAccountData returns totals in the oracle base currency = USD, 8 dp;
-// healthFactor is WAD (1e18); liquidation threshold is bps.
-const AAVE_POOL_ARBITRUM = '0x794a61358D6845594F94dc1DB02A252b5b4814aD'
-const POOL_ABI = parseAbi([
-  'function getUserAccountData(address user) view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)',
-])
-
-export async function fetchAave() {
-  const wallet = process.env.AAVE_WALLET_ADDRESS
-  if (!wallet || !/^0x[0-9a-fA-F]{40}$/.test(wallet)) {
-    throw new Error('AAVE_WALLET_ADDRESS is not configured (set it in Netlify env vars)')
-  }
-  const rpc = process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc'
-  const client = createPublicClient({ transport: http(rpc, { timeout: 9000 }) })
-  const [collateral, debt, availableBorrows, liqThresholdBps, ltvBps, hfWad] = await client.readContract({
-    address: AAVE_POOL_ARBITRUM,
-    abi: POOL_ABI,
-    functionName: 'getUserAccountData',
-    args: [wallet],
-  })
-  const base = (x) => Number(x) / 1e8 // USD, 8 decimals
-  const hf = debt === 0n ? null : Number(hfWad) / 1e18 // no debt => HF is uint max; report null ("no debt")
-  return {
-    network: 'arbitrum',
-    pool: AAVE_POOL_ARBITRUM,
-    collateralUsd: round(base(collateral), 2),
-    debtUsd: round(base(debt), 2),
-    availableBorrowsUsd: round(base(availableBorrows), 2),
-    liquidationThresholdPct: Number(liqThresholdBps) / 100,
-    ltvPct: Number(ltvBps) / 100,
-    healthFactor: hf === null ? null : round(hf, 4),
-    noDebt: debt === 0n,
   }
 }
 
-function round(n, dp) {
-  const f = 10 ** dp
-  return Math.round(n * f) / f
-}
-
-// ---------------- CoinGecko (BTC daily history, 365d) ----------------
-export async function fetchBtcHistory() {
-  const headers = { accept: 'application/json' }
-  if (process.env.COINGECKO_API_KEY) headers['x-cg-demo-api-key'] = process.env.COINGECKO_API_KEY
-  const url = 'https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=365&interval=daily'
-  const res = await fetchWithTimeout(url, { headers }, 15000)
-  if (!res.ok) throw new Error(`CoinGecko history HTTP ${res.status}`)
-  const body = await res.json()
-  const prices = (body.prices || []).filter((p) => Array.isArray(p) && Number.isFinite(p[1]))
-  if (prices.length < 30) throw new Error(`CoinGecko history returned only ${prices.length} points`)
-  return { prices }
-}
-
-// Blob-cached wrapper (6h TTL) shared by the endpoint and the snapshot cron,
-// so we hit CoinGecko's history route at most ~4x/day.
-export async function getBtcHistoryCached(store, { maxAgeMs = 6 * 3600 * 1000, refresh = false } = {}) {
-  const cached = await store.get('btc_history', { type: 'json' }).catch(() => null)
-  const fresh = cached && Date.now() - cached.fetchedAt < maxAgeMs
-  if (fresh && !refresh) return { ...cached, cache: 'hit' }
+/** MSTR candles: Yahoo (1d→2y / 30m→60d) → Stooq daily as last resort. */
+export async function mstrCandles(tf) {
+  const cfg = tf === '30m' ? { interval: '30m', range: '60d' } : { interval: '1d', range: '2y' }
   try {
-    const { prices } = await fetchBtcHistory()
-    const payload = { fetchedAt: Date.now(), prices }
-    await store.setJSON('btc_history', payload)
-    return { ...payload, cache: refresh ? 'refreshed' : 'miss' }
-  } catch (e) {
-    if (cached) return { ...cached, cache: 'stale-after-error', staleError: String(e?.message || e) }
-    throw e
+    const { candles } = parseYahooChart(await getJson(`${YA}/MSTR?interval=${cfg.interval}&range=${cfg.range}`))
+    if (candles.length === 0) throw new Error('yahoo: zero candles')
+    return { candles, sourceDetail: 'yahoo' }
+  } catch (yahooErr) {
+    if (tf === '30m') throw new Error(`intraday unavailable: ${yahooErr.message}`)
+    const { candles } = parseStooqDaily(await getText('https://stooq.com/q/d/l/?s=mstr.us&i=d'))
+    return { candles: candles.slice(-730), sourceDetail: `stooq (yahoo failed: ${yahooErr.message})` }
   }
 }
 
-// ---------------- Intraday candles (Kraken → Coinbase fallback) ----------------
-// Kraken public OHLC gives 720 candles at 1/5/15m — best free depth, US-OK.
-// Coinbase Exchange gives 300 at 60/300/900s as the fallback. 3m is built by
-// aggregating 1m server-side (neither venue serves 3m natively). The payload
-// always names the venue, same policy as the funding feed.
-const TF_MAP = { '1m': { kraken: 1, coinbase: 60, agg: 1 }, '3m': { kraken: 1, coinbase: 60, agg: 3 }, '5m': { kraken: 5, coinbase: 300, agg: 1 }, '15m': { kraken: 15, coinbase: 900, agg: 1 } }
-
-async function krakenCandles(interval) {
-  const res = await fetchWithTimeout(`https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=${interval}`, {}, 10000)
-  if (!res.ok) throw new Error(`Kraken HTTP ${res.status}`)
-  const body = await res.json()
-  if (body.error?.length) throw new Error(`Kraken: ${body.error.join(',')}`)
-  const key = Object.keys(body.result || {}).find((k) => k !== 'last')
-  const rows = body.result?.[key] || []
-  const candles = rows.map((r) => ({ t: Number(r[0]), o: Number(r[1]), h: Number(r[2]), l: Number(r[3]), c: Number(r[4]), v: Number(r[6]) }))
-  if (candles.length < 30) throw new Error(`Kraken returned only ${candles.length} candles`)
-  return candles
+/** BTC spot: Binance → Coinbase → CoinGecko. */
+export async function btcSpot() {
+  const chain = [
+    async () => ({ ...parseBinance24hr(await getJson('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT')), sourceDetail: 'binance' }),
+    async () => ({ ...parseCoinbaseSpot(await getJson('https://api.coinbase.com/v2/prices/BTC-USD/spot')), sourceDetail: 'coinbase' }),
+    async () => ({ ...parseCoingeckoSimple(await getJson('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true')), sourceDetail: 'coingecko' }),
+  ]
+  return tryChain(chain, 'btc spot')
 }
 
-async function coinbaseCandles(granularity) {
-  const res = await fetchWithTimeout(`https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=${granularity}`, { headers: { 'user-agent': 'macro-command-center' } }, 10000)
-  if (!res.ok) throw new Error(`Coinbase HTTP ${res.status}`)
-  const rows = await res.json() // [time, low, high, open, close, volume], newest first
-  const candles = rows.map((r) => ({ t: Number(r[0]), o: Number(r[3]), h: Number(r[2]), l: Number(r[1]), c: Number(r[4]), v: Number(r[5]) })).sort((a, b) => a.t - b.t)
-  if (candles.length < 30) throw new Error(`Coinbase returned only ${candles.length} candles`)
-  return candles
+/** BTC candles: Binance klines → Coinbase → CoinGecko OHLC (volumeless). */
+export async function btcCandles(tf) {
+  const isDay = tf !== '30m'
+  const chain = [
+    async () => ({
+      candles: parseBinanceKlines(await getJson(
+        `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${isDay ? '1d' : '30m'}&limit=${isDay ? 730 : 500}`)),
+      sourceDetail: 'binance',
+    }),
+    async () => ({
+      candles: parseCoinbaseCandles(await getJson(
+        `https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=${isDay ? 86400 : 1800}`)),
+      sourceDetail: 'coinbase',
+    }),
+    async () => ({
+      candles: parseCoingeckoOhlc(await getJson(
+        `https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=${isDay ? 365 : 7}`)),
+      sourceDetail: 'coingecko (no volume)',
+    }),
+  ]
+  const out = await tryChain(chain, 'btc candles')
+  if (!out.candles?.length) throw new Error('btc candles: all sources empty')
+  return out
 }
 
-export async function fetchCandles(tf = '5m') {
-  const cfg = TF_MAP[tf]
-  if (!cfg) throw new Error(`Unsupported timeframe "${tf}" — use 1m, 3m, 5m, or 15m`)
-  let candles, venue
-  try { candles = await krakenCandles(cfg.kraken); venue = 'kraken' }
-  catch (krakenErr) {
-    try { candles = await coinbaseCandles(cfg.coinbase); venue = 'coinbase (fallback)' }
-    catch (cbErr) { throw new Error(`Both candle venues failed — Kraken: ${krakenErr.message}; Coinbase: ${cbErr.message}`) }
+async function tryChain(fns, what) {
+  const errors = []
+  for (const fn of fns) {
+    try { return await fn() } catch (e) { errors.push(e.message) }
   }
-  return { tf, venue, candles } // aggregation to 3m happens in the endpoint via src/lib/ta.js
-}
-
-// Last trade price for paper-trade stamping (server-side, so entries/exits
-// are marked by the market, not by the client).
-export async function fetchSpotLast() {
-  try {
-    const res = await fetchWithTimeout('https://api.kraken.com/0/public/Ticker?pair=XBTUSD', {}, 8000)
-    if (!res.ok) throw new Error(`Kraken HTTP ${res.status}`)
-    const body = await res.json()
-    const key = Object.keys(body.result || {})[0]
-    const px = Number(body.result?.[key]?.c?.[0])
-    if (!Number.isFinite(px)) throw new Error('Kraken ticker: no price')
-    return { price: px, venue: 'kraken' }
-  } catch (e) {
-    const res = await fetchWithTimeout('https://api.exchange.coinbase.com/products/BTC-USD/ticker', { headers: { 'user-agent': 'macro-command-center' } }, 8000)
-    if (!res.ok) throw new Error(`Spot price failed on both venues (Kraken: ${e.message}; Coinbase HTTP ${res.status})`)
-    const body = await res.json()
-    const px = Number(body.price)
-    if (!Number.isFinite(px)) throw new Error('Coinbase ticker: no price')
-    return { price: px, venue: 'coinbase (fallback)' }
-  }
+  throw new Error(`${what}: all sources failed — ${errors.join(' | ')}`)
 }

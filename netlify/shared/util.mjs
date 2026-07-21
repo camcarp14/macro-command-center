@@ -1,12 +1,12 @@
 // Shared plumbing for every Netlify function. Three jobs:
 //   1. Optional shared-secret auth (DASHBOARD_TOKEN) on every endpoint.
 //   2. fetch with a hard timeout so upstream hangs become visible errors.
-//   3. Per-source health recording into Netlify Blobs so the Data Sources
-//      tab reflects reality, not hope.
+//   3. Per-source health recording into Netlify Blobs so /api/status
+//      reflects reality, not hope.
 import { getStore } from '@netlify/blobs'
 
 export function store() {
-  return getStore('mcc')
+  return getStore('torque')
 }
 
 export function unauthorized() {
