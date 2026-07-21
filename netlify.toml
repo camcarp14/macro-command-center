@@ -6,6 +6,10 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
+# Stop-watch + entry-signal sentinel. Runs even when the app is closed.
+[functions."watch-snapshot"]
+  schedule = "*/30 * * * *"
+
 # API routes must come before the SPA fallback (first match wins).
 [[redirects]]
   from = "/api/*"

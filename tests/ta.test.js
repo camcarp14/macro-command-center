@@ -1,86 +1,119 @@
 import { describe, it, expect } from 'vitest'
-import { ema, rsi, atr, vwapDaily, aggregateCandles, regimeRead, hourlyActivity } from '../src/lib/ta.js'
-import { projectionCone } from '../src/lib/projection.js'
+import { sma, ema, rsi, atr, roc, slopePct, highestHigh, lowestLow, swings } from '../src/lib/ta.js'
+import { BASE_T } from './fixtures.js'
 
-const mkCandles = (closes, { t0 = 1700000000, step = 300, spread = 1, vol = 10 } = {}) =>
-  closes.map((c, i) => ({ t: t0 + i * step, o: c, h: c + spread, l: c - spread, c, v: vol }))
+const DAY = 86400
+const mk = (o, h, l, c, i = 0) => ({ t: BASE_T + i * DAY, o, h, l, c, v: 1e6 })
 
-describe('ta core math', () => {
-  it('EMA seeds with SMA then converges toward the latest values', () => {
-    const out = ema([1, 2, 3, 4, 5, 6], 3)
-    expect(out[2]).toBe(2) // SMA(1,2,3)
-    expect(out[5]).toBeGreaterThan(4.5) // pulled toward 6
-    expect(out[0]).toBeNull()
+describe('sma', () => {
+  it('hand-computed', () => {
+    expect(sma([1, 2, 3, 4], 2)).toEqual([null, 1.5, 2.5, 3.5])
   })
-  it('RSI is 100 on a straight rise and ~0 on a straight fall', () => {
-    const up = rsi(Array.from({ length: 20 }, (_, i) => 100 + i), 14)
-    expect(up[19]).toBe(100)
-    const dn = rsi(Array.from({ length: 20 }, (_, i) => 100 - i), 14)
-    expect(dn[19]).toBeLessThan(1)
+  it('empty and short input', () => {
+    expect(sma([], 3)).toEqual([])
+    expect(sma([1, 2], 3)).toEqual([null, null])
   })
-  it('ATR equals the constant bar range on uniform candles', () => {
-    const out = atr(mkCandles(Array(20).fill(100), { spread: 2 }), 14)
-    expect(out[19]).toBeCloseTo(4, 5) // high−low = 4 every bar
+})
+
+describe('ema', () => {
+  it('seeds with SMA then compounds (hand-computed, period 2)', () => {
+    const e = ema([1, 2, 3, 4, 5], 2)
+    expect(e[0]).toBeNull()
+    expect(e[1]).toBeCloseTo(1.5, 10)
+    expect(e[2]).toBeCloseTo(2.5, 10)
+    expect(e[3]).toBeCloseTo(3.5, 10)
+    expect(e[4]).toBeCloseTo(4.5, 10)
   })
-  it('VWAP resets at UTC day boundaries', () => {
-    const dayA = mkCandles([100, 100], { t0: 86400 * 100, step: 300 })
-    const dayB = mkCandles([200, 200], { t0: 86400 * 101, step: 300 })
-    const out = vwapDaily([...dayA, ...dayB])
-    expect(out[1]).toBeCloseTo(100, 0)
-    expect(out[2]).toBeCloseTo(200, 0) // fresh anchor, not blended with day A
+  it('shorter than period → all null', () => {
+    expect(ema([1, 2], 5)).toEqual([null, null])
   })
-  it('aggregation preserves OHLCV semantics (1m → 3m)', () => {
-    const c = [
-      { t: 0, o: 10, h: 12, l: 9, c: 11, v: 1 },
-      { t: 60, o: 11, h: 15, l: 10, c: 14, v: 2 },
-      { t: 120, o: 14, h: 14, l: 8, c: 9, v: 3 },
+})
+
+describe('rsi', () => {
+  it('all-up closes → 100', () => {
+    const closes = Array.from({ length: 20 }, (_, i) => 100 + i)
+    const r = rsi(closes, 14)
+    expect(r[13]).toBeNull()
+    expect(r[14]).toBe(100)
+    expect(r[19]).toBe(100)
+  })
+  it('all-down closes → near 0', () => {
+    const closes = Array.from({ length: 20 }, (_, i) => 100 - i)
+    const r = rsi(closes, 14)
+    expect(r[19]).toBeLessThan(1)
+  })
+  it('too short → all null', () => {
+    expect(rsi([1, 2, 3], 14)).toEqual([null, null, null])
+  })
+})
+
+describe('atr', () => {
+  it('constant true range stays constant (hand-computed)', () => {
+    const candles = Array.from({ length: 6 }, (_, i) => mk(10, 11, 9, 10, i))
+    const a = atr(candles, 3)
+    expect(a[0]).toBeNull()
+    expect(a[1]).toBeNull()
+    expect(a[2]).toBeCloseTo(2, 10)
+    expect(a[5]).toBeCloseTo(2, 10)
+  })
+  it('gap widens TR via previous close', () => {
+    // bar 1 gaps: h=25 l=24 with prev close 10 → TR = |25-10| = 15
+    const candles = [mk(10, 11, 9, 10, 0), mk(24, 25, 24, 25, 1)]
+    const a = atr(candles, 2)
+    expect(a[1]).toBeCloseTo((2 + 15) / 2, 10)
+  })
+  it('short input → nulls', () => {
+    expect(atr([mk(1, 2, 0.5, 1)], 14)).toEqual([null])
+  })
+})
+
+describe('roc & slopePct', () => {
+  it('roc hand-computed', () => {
+    expect(roc([100, 110], 1)).toEqual([null, 10.000000000000009])
+  })
+  it('slopePct hand-computed', () => {
+    expect(slopePct([100, 105, 110], 2)).toBeCloseTo(5, 10)
+  })
+  it('slopePct null-safe', () => {
+    expect(slopePct([100], 5)).toBeNull()
+    expect(slopePct([null, null, 100], 2)).toBeNull()
+  })
+})
+
+describe('highestHigh / lowestLow', () => {
+  const candles = [mk(1, 5, 1, 2, 0), mk(2, 9, 2, 3, 1), mk(3, 7, 0.5, 4, 2)]
+  it('window math', () => {
+    expect(highestHigh(candles, 2)).toBe(9)
+    expect(highestHigh(candles, 3)).toBe(9)
+    expect(lowestLow(candles, 2)).toBe(0.5)
+    expect(lowestLow(candles, 1, 1)).toBe(2)
+  })
+  it('out-of-range → null', () => {
+    expect(highestHigh(candles, 4)).toBeNull()
+    expect(lowestLow(candles, 1, 9)).toBeNull()
+    expect(highestHigh(candles, 0)).toBeNull()
+  })
+})
+
+describe('swings', () => {
+  it('finds confirmed pivots, rejects ties, ignores unconfirmable tail', () => {
+    // Hand-built highs: 5,6,9,6,5,4,8 — pivot high 9 at i=2 (strength 2).
+    // Lows mirror: 5,4,3,4,5,2,6 — low 3 at i=2 not a pivot (l[5]=2 is lower
+    // but outside window: window is i±2, so l[2]=3 vs 5,4,4,5 → IS a pivot);
+    // l[5]=2 can't confirm (needs i+2 = 7 which doesn't exist... len 7, i≤4).
+    const candles = [
+      mk(5, 5, 5, 5, 0), mk(5, 6, 4, 5, 1), mk(5, 9, 3, 5, 2),
+      mk(5, 6, 4, 5, 3), mk(5, 5, 5, 5, 4), mk(5, 4, 2, 3, 5), mk(5, 8, 6, 7, 6),
     ]
-    const [agg] = aggregateCandles(c, 3)
-    expect(agg).toEqual({ t: 0, o: 10, h: 15, l: 8, c: 9, v: 6 })
+    const s = swings(candles, 2)
+    expect(s.highs).toEqual([{ i: 2, price: 9 }])
+    expect(s.lows).toEqual([{ i: 2, price: 3 }])
   })
-})
-
-describe('regime read', () => {
-  it('labels a clean rise as TRENDING UP and a clean fall as TRENDING DOWN', () => {
-    const up = regimeRead(mkCandles(Array.from({ length: 120 }, (_, i) => 100 + i * 0.5)))
-    expect(up.state).toBe('TRENDING UP')
-    const dn = regimeRead(mkCandles(Array.from({ length: 120 }, (_, i) => 160 - i * 0.5)))
-    expect(dn.state).toBe('TRENDING DOWN')
+  it('ties reject (strict inequality)', () => {
+    const candles = [mk(5, 7, 4, 5, 0), mk(5, 7, 3, 5, 1), mk(5, 7, 4, 5, 2), mk(5, 6, 4, 5, 3), mk(5, 6, 4, 5, 4)]
+    expect(swings(candles, 2).highs).toEqual([])
   })
-  it('labels an oscillating tape as CHOP and admits insufficient data honestly', () => {
-    const chop = regimeRead(mkCandles(Array.from({ length: 120 }, (_, i) => 100 + (i % 2 ? 0.3 : -0.3))))
-    expect(chop.state).toBe('CHOP')
-    expect(regimeRead(mkCandles([1, 2, 3])).state).toBe('INSUFFICIENT DATA')
-  })
-})
-
-describe('hourly activity', () => {
-  it('ranks the hour with the widest ranges highest', () => {
-    const quiet = Array.from({ length: 60 }, (_, i) => ({ t: i * 60, o: 100, h: 100.1, l: 99.9, c: 100, v: 1 })) // hour 0
-    const busy = Array.from({ length: 60 }, (_, i) => ({ t: 3600 + i * 60, o: 100, h: 102, l: 98, c: 100, v: 1 })) // hour 1
-    const rows = hourlyActivity([...quiet, ...busy])
-    const h1 = rows.find((r) => r.hourUtc === 1)
-    expect(h1.rel).toBe(1)
-    expect(rows.find((r) => r.hourUtc === 0).avgRangePct).toBeLessThan(h1.avgRangePct)
-  })
-})
-
-describe('projection cone', () => {
-  it('is symmetric in log space, widens with √t, base stays flat', () => {
-    const p = projectionCone({ lastPrice: 100000, realizedVolPct: 40, horizonDays: 30, startTs: 0 })
-    expect(p.days[0].bull1s).toBe(100000)
-    expect(p.days[30].base).toBe(100000) // zero-drift base: no fake direction
-    const d7 = p.days[7], d28 = p.days[28]
-    // √t scaling: 28d band ≈ 2× the 7d band in log terms
-    const w7 = Math.log(d7.bull1s / d7.bear1s), w28 = Math.log(d28.bull1s / d28.bear1s)
-    expect(w28 / w7).toBeCloseTo(2, 1)
-    // log-symmetry: bull × bear = base²
-    expect(d7.bull1s * d7.bear1s).toBeCloseTo(100000 ** 2, -6)
-    expect(p.days[30].up95).toBeGreaterThan(p.days[30].bull1s)
-  })
-  it('refuses to project without real inputs and always carries its caveat', () => {
-    expect(projectionCone({ lastPrice: NaN, realizedVolPct: 40, horizonDays: 7 })).toBeNull()
-    const p = projectionCone({ lastPrice: 100, realizedVolPct: 40, horizonDays: 7 })
-    expect(p.caveat).toMatch(/not a forecast/i)
+  it('empty input', () => {
+    expect(swings([], 2)).toEqual({ highs: [], lows: [] })
   })
 })

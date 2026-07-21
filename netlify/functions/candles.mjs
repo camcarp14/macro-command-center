@@ -1,21 +1,21 @@
-// Intraday BTC candles: ?tf=1m|3m|5m|15m. Kraken primary (720 candles),
-// Coinbase fallback (300); 3m aggregated from 1m. Live feed — no cache.
-import { checkAuth, unauthorized, json, recordStatus } from '../shared/util.mjs'
-import { fetchCandles } from '../shared/sources.mjs'
-import { aggregateCandles } from '../../src/lib/ta.js'
+import { sourceHandler, json, checkAuth, unauthorized } from '../shared/util.mjs'
+import { mstrCandles, btcCandles } from '../shared/sources.mjs'
 
-export default async (req) => {
+const handler = sourceHandler('candles', async (req) => {
+  const url = new URL(req.url)
+  const symbol = (url.searchParams.get('symbol') || 'MSTR').toUpperCase()
+  const tf = url.searchParams.get('tf') || '1d'
+  // validation happens in the wrapper below (400, not 502)
+  const data = symbol === 'BTC' ? await btcCandles(tf) : await mstrCandles(tf)
+  return { symbol, tf, ...data }
+})
+
+export default async (req, context) => {
   if (!checkAuth(req)) return unauthorized()
-  const started = Date.now()
-  const tf = new URL(req.url).searchParams.get('tf') || '5m'
-  try {
-    const { venue, candles } = await fetchCandles(tf)
-    const out = tf === '3m' ? aggregateCandles(candles, 3) : candles
-    recordStatus('candles', { ok: true, latencyMs: Date.now() - started, detail: `${tf} × ${out.length} via ${venue}` })
-    return json({ tf, venue, candles: out, meta: { source: 'candles', fetchedAt: Date.now(), latencyMs: Date.now() - started } })
-  } catch (e) {
-    const msg = String(e?.message || e)
-    recordStatus('candles', { ok: false, latencyMs: Date.now() - started, error: msg })
-    return json({ error: msg, meta: { source: 'candles', failed: true } }, 502)
-  }
+  const url = new URL(req.url)
+  const symbol = (url.searchParams.get('symbol') || 'MSTR').toUpperCase()
+  const tf = url.searchParams.get('tf') || '1d'
+  if (!['MSTR', 'BTC'].includes(symbol)) return json({ error: `unknown symbol ${symbol}` }, 400)
+  if (!['1d', '30m'].includes(tf)) return json({ error: `unknown tf ${tf}` }, 400)
+  return handler(req, context)
 }
