@@ -100,17 +100,24 @@ function PositionCard({ derived, position }) {
 
 function trailNote(position, pd) {
   if (!pd) return 'initial stop'
-  if (Number.isFinite(position.stopOverride) && pd.effStop === position.stopOverride) return 'manual override'
   if (pd.trailNow != null && pd.effStop === pd.trailNow) return 'chandelier trail'
+  if (Number.isFinite(position.stopOverride) && pd.effStop === position.stopOverride) return 'manual override'
+  if (Number.isFinite(position.stopHighWater) && pd.effStop === position.stopHighWater) return 'ratchet high-water'
   if (pd.effStop === position.avgEntry) return 'breakeven lock'
   return 'initial stop'
 }
 
 /** "If you enter now" — live sizing with editable stop mode. The discipline
- *  widget: change the mode, watch shares and risk recompute. */
+ *  widget: change the mode, watch shares and risk recompute. Defers
+ *  (collapses) once a position is known — position data arrives after
+ *  mount, so sync until the user takes over the toggle. */
 function EntryPlanner({ derived, settings, hasPosition }) {
   const [mode, setMode] = useState(null)
   const [open, setOpen] = useState(!hasPosition)
+  const userToggled = React.useRef(false)
+  React.useEffect(() => {
+    if (!userToggled.current) setOpen(!hasPosition)
+  }, [hasPosition])
   if (!settings) return null
   const effMode = mode ?? settings.stopMode
   const price = derived.price
@@ -125,7 +132,7 @@ function EntryPlanner({ derived, settings, hasPosition }) {
     <section className="card" data-testid="entry-planner">
       <div className="ttl">If you enter now
         <span className="spacer" />
-        <button className="btn ghost sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>{open ? 'collapse' : 'expand'}</button>
+        <button className="btn ghost sm" onClick={() => { userToggled.current = true; setOpen((o) => !o) }} aria-expanded={open}>{open ? 'collapse' : 'expand'}</button>
       </div>
       <Expand open={open}>
         <div className="seg" style={{ marginBottom: 12 }}>

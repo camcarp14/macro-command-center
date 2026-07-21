@@ -85,19 +85,21 @@ export default function Journal({ journalSrc }) {
           </div>
         ) : (
           <div className="tbl-wrap">
+            {/* R and P&L lead — the scoreboard columns must be the ones a
+                narrow viewport shows first, not the ones it cuts off */}
             <table data-testid="trades-table">
-              <thead><tr><th>Dates</th><th>Kind</th><th>Shares</th><th>Entry</th><th>Exit</th><th>Stop</th><th>R</th><th>P&L</th><th /></tr></thead>
+              <thead><tr><th>Dates</th><th>Kind</th><th>R</th><th>P&L</th><th>Entry</th><th>Exit</th><th>Stop</th><th>Shares</th><th /></tr></thead>
               <tbody>
                 {withR.map((t) => (
                   <tr key={t.id}>
                     <td className="tiny">{t.entryDate} → {t.exitDate}</td>
                     <td><span className="chip">{t.kind}</span></td>
-                    <td className="num">{t.shares}</td>
+                    <td className={`num ${t.r == null ? '' : t.r >= 0 ? 'pos' : 'neg'}`}>{t.r == null ? '—' : `${t.r >= 0 ? '+' : ''}${round2(t.r)}R`}</td>
+                    <td className={`num ${t.pnl >= 0 ? 'pos' : 'neg'}`}>{t.pnl < 0 ? '-' : ''}${Math.abs(Math.round(t.pnl)).toLocaleString('en-US')}</td>
                     <td className="num">{fmtPx(t.entry)}</td>
                     <td className="num">{fmtPx(t.exit)}</td>
                     <td className="num">{fmtPx(t.initialStop)}</td>
-                    <td className={`num ${t.r == null ? '' : t.r >= 0 ? 'pos' : 'neg'}`}>{t.r == null ? '—' : `${t.r >= 0 ? '+' : ''}${round2(t.r)}R`}</td>
-                    <td className={`num ${t.pnl >= 0 ? 'pos' : 'neg'}`}>{t.pnl < 0 ? '-' : ''}${Math.abs(Math.round(t.pnl)).toLocaleString('en-US')}</td>
+                    <td className="num">{t.shares}</td>
                     <td><button className="btn ghost sm" disabled={busy} onClick={() => remove(t.id)} aria-label={`Delete trade ${t.entryDate}`}>✕</button></td>
                   </tr>
                 ))}
@@ -119,16 +121,24 @@ function RCurve({ curve }) {
   const y = (v) => pad + (1 - (v - min) / (max - min || 1)) * (h - pad * 2)
   const path = curve.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
   const last = curve[curve.length - 1]
+  // The end label lives in HTML, not the scaled SVG — an 11px SVG label
+  // shrinks to ~6px at mobile card width, which is decoration, not a label.
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img"
-      aria-label={`Cumulative R curve ending at ${round2(last)}R over ${curve.length} trades`}>
-      <line x1={pad} x2={w - pad} y1={y(0)} y2={y(0)} stroke="rgba(255,255,255,0.12)" strokeDasharray="3 4" />
-      <path d={path} fill="none" stroke={last >= 0 ? '#0FA3A3' : '#D93A5F'} strokeWidth="2" strokeLinejoin="round" />
-      <circle cx={x(curve.length - 1)} cy={y(last)} r="3.5" fill={last >= 0 ? '#0FA3A3' : '#D93A5F'} />
-      <text x={Math.min(x(curve.length - 1) + 8, w - 46)} y={y(last) + 4} fill="#A2ABBD" fontSize="11" fontFamily="inherit">
+    <div style={{ position: 'relative' }}>
+      <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img"
+        aria-label={`Cumulative R curve ending at ${round2(last)}R over ${curve.length} trades`}>
+        <line x1={pad} x2={w - pad} y1={y(0)} y2={y(0)} stroke="rgba(255,255,255,0.12)" strokeDasharray="3 4" />
+        <path d={path} fill="none" stroke={last >= 0 ? '#0FA3A3' : '#D93A5F'} strokeWidth="2" strokeLinejoin="round" />
+        <circle cx={x(curve.length - 1)} cy={y(last)} r="3.5" fill={last >= 0 ? '#0FA3A3' : '#D93A5F'} />
+      </svg>
+      <span className="num" style={{
+        position: 'absolute', right: 0, top: `${(y(last) / h) * 100}%`, transform: 'translateY(-50%)',
+        fontSize: 12, fontWeight: 700, color: last >= 0 ? '#0FA3A3' : '#D93A5F',
+        background: 'var(--card)', padding: '0 4px', borderRadius: 4,
+      }}>
         {last >= 0 ? '+' : ''}{round2(last)}R
-      </text>
-    </svg>
+      </span>
+    </div>
   )
 }
 

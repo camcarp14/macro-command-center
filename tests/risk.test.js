@@ -99,6 +99,12 @@ describe('effectiveStop', () => {
     // raw float threshold computes 102.70000000000002; 102.70 must still arm
     expect(effectiveStop({ initialStop: 97.32, trailStop: null, entry: 100.01, beAtR: 1, highestCloseSinceEntry: 102.70 })).toBe(100.01)
   })
+  it('…but a genuinely sub-threshold close does NOT arm (epsilon, not cent-rounding)', () => {
+    // true threshold 102.704: 102.70 is 0.4 cents short — cent-rounding both
+    // sides would wrongly arm breakeven here
+    expect(effectiveStop({ initialStop: 97.296, trailStop: null, entry: 100, beAtR: 1, highestCloseSinceEntry: 102.70 })).toBe(97.3)
+    expect(effectiveStop({ initialStop: 97.296, trailStop: null, entry: 100, beAtR: 1, highestCloseSinceEntry: 102.704 })).toBe(100)
+  })
   it('all-null → null', () => {
     expect(effectiveStop({ initialStop: null, trailStop: null, entry: null, highestCloseSinceEntry: null })).toBeNull()
   })

@@ -59,6 +59,15 @@ test.describe('honest degradation — a dead source must look dead', () => {
     await expect(page.getByTestId('entry-planner')).toContainText('No live price to plan against')
   })
 
+  test('aged-dead BTC HISTORY vetoes the live trigger (btcAlign runs on that feed)', async ({ page }) => {
+    const data = payloads()
+    data.candlesBtc.meta.fetchedAt = Date.now() - 80 * 3600 * 1000 // > 3×26h → dead
+    await installApi(page, { data })
+    await page.goto('/')
+    await expect(page.getByTestId('directive-action')).toHaveText('Stand aside')
+    await expect(page.getByTestId('directive')).toContainText('BTC history')
+  })
+
   test('EOD fallback quote wears an EOD chip, never a green live face', async ({ page }) => {
     const eod = payloads()
     eod.quote.kind = 'eod'

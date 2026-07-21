@@ -18,10 +18,13 @@ export default async (req) => {
     if (!v.ok) return json({ error: 'validation failed', errors: v.errors }, 400)
     // The stop high-water mark survives edits and only ratchets up — this is
     // what makes "the stop only ever rises" hold across position blends and
-    // settings changes. It resets only when the position is cleared.
+    // settings changes. It resets when the position is cleared OR when the
+    // entry date changes (a different entry date is a different trade; trade
+    // A's ratchet must not stop-out trade B at birth).
     const prev = await s.get('position', { type: 'json' })
+    const sameTrade = prev?.entryDate === v.value.entryDate
     const stopHighWater = Math.max(
-      prev?.stopHighWater ?? -Infinity,
+      sameTrade ? prev?.stopHighWater ?? -Infinity : -Infinity,
       v.value.initialStop,
       v.value.stopOverride ?? -Infinity,
     )

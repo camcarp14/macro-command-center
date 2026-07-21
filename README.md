@@ -64,7 +64,7 @@ Vite + React 18 · lightweight-charts · Netlify Functions v2 + Netlify Blobs
 | MSTR quote | Yahoo (delayed ~15 min) → Stooq (EOD) | labeled on the tape |
 | MSTR candles | Yahoo 2y daily → Stooq | 26 h window |
 | BTC spot | Binance → Coinbase → CoinGecko | live (3 min window) |
-| BTC candles | Binance → Coinbase → CoinGecko | daily |
+| BTC candles | Binance → Coinbase (CoinGecko: 30m tier only) | daily |
 
 Drop a Polygon/Finnhub key into `netlify/shared/sources.mjs` later for true
 real-time equity quotes — the adapter seam is ready.
@@ -104,10 +104,10 @@ npm run dev:ui     # vite only (UI against mocked/absent APIs)
 ## Verification
 
 ```bash
-npm test           # 145 unit tests: risk math, signals, torque, advice ladder,
+npm test           # 147 unit tests: risk math, signals, torque, advice ladder,
                    # replay no-lookahead, validators, upstream parsers
 npm run smoke      # planted-problem engine audit (11 checks, exits non-zero)
-npm run e2e        # 28 hermetic Playwright specs, desktop + 390×844
+npm run e2e        # 30 hermetic Playwright specs, desktop + 390×844
 npm run gate       # all of the above + esbuild function bundle sweep + build
 ```
 

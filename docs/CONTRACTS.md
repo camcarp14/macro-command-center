@@ -56,8 +56,9 @@ unit-tested in `tests/` using the deterministic generators in `tests/fixtures.js
   MONOTONICALLY NON-DECREASING — this is the point. While ATR unseeded, carry `initialStop`.
 - `effectiveStop({ initialStop, trailStop, entry, beAtR = 1, highestCloseSinceEntry })` →
   number|null: `max(initialStop, trailStop ?? -Inf, breakeven)` where breakeven = `entry`
-  once `highestCloseSinceEntry >= entry + beAtR*(entry - initialStop)` — compared at
-  CENT precision (round2 both sides) so a float ULP can't miss the exact +1R boundary.
+  once `highestCloseSinceEntry >= entry + beAtR*(entry - initialStop)` — compared
+  with a float-noise epsilon (1e-9) so a ULP can't miss the exact +1R boundary
+  while sub-cent-short closes still correctly fail to arm.
 - `rMultiple({ entry, initialStop, price })` → number|null. `(price-entry)/(entry-initialStop)`;
   null if `entry-initialStop <= 0` or any input null.
 - `blendLots(lots)` → `{ shares, avgEntry }` from `[{shares, entry}]`; empty → `{shares:0, avgEntry:null}`.
@@ -123,7 +124,7 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
 
 - `composeDirective(input)` — input:
   ```
-  { price, freshQuote:{state}, freshBtc:{state}, freshCandles:{state},
+  { price, freshQuote:{state}, freshBtc:{state}, freshCandles:{state}, freshBtcCandles:{state},
     regime, btcAlign, pullback, breakout, exitFlags,
     position: { shares, avgEntry, initialStop } | null,
     effectiveStop, r, sizing, addSizing, torque: { read } | null,
@@ -136,13 +137,13 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
   3. position && any other hard flag → `EXIT` (urgent)
   4. position && any soft flag → `TRIM` (act)
   5. position && pullback.stage==='trigger' && regime uptrend && btcAlign.aligned
-     && effectiveStop >= avgEntry && freshBtc/freshCandles NOT dead && addSizing.ok
+     && effectiveStop >= avgEntry && freshBtc/freshCandles/freshBtcCandles NOT dead && addSizing.ok
      → `ADD` (act; uses `addSizing`). When the spec conditions hold but freshness or
      addSizing blocks, fall to HOLD with an explicit "add trigger active but blocked: …" reason.
   6. position → `HOLD` (info; reasons include R, stop distance %, trail level)
   7. !position && regime uptrend && btcAlign.aligned && (pullback trigger || breakout active):
-     - freshBtc or freshCandles dead → `STAND_ASIDE` naming the dead feed(s) — never
-       pretend the trigger doesn't exist
+     - freshBtc, freshCandles, or freshBtcCandles dead → `STAND_ASIDE` naming the
+       dead feed(s) — never pretend the trigger doesn't exist
      - sizing missing/not ok → `STAND_ASIDE` naming the sizing blocker
      - else → `ENTER` (act; uses `sizing`)
   8. !position && regime uptrend && !btcAlign.aligned → `STAND_ASIDE`
@@ -150,8 +151,8 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
   9. else → `STAND_ASIDE`
   Guardrails appended regardless of action: stale-data warning when any fresh state
   ≠ 'live'; torque grade 'rich' warning; `marketSession === 'closed'` note.
-  Reasons cite actual numbers. NEVER emit ENTER/ADD when freshQuote, freshBtc, or
-  freshCandles is 'dead'. Rung 9's "no trigger yet" copy is reserved for genuinely
+  Reasons cite actual numbers. NEVER emit ENTER/ADD when freshQuote, freshBtc,
+  freshCandles, or freshBtcCandles is 'dead' (BTC candles feed the alignment gate). Rung 9's "no trigger yet" copy is reserved for genuinely
   trigger-less states.
 
 ## src/lib/replay.js  (imports: ta.js, risk.js, signals.js)
@@ -229,26 +230,33 @@ separately for fixture tests (`parseYahooChart`, `parseStooqDaily`, `parseBinanc
   `max(previous, initialStop, stopOverride)`; watch-snapshot ratchets it to the
   computed effective stop each run; it survives edits, joins the client's
   effective-stop max (this is what makes "the stop only ever rises" an
-  END-TO-END guarantee across blends and settings changes), and resets only
-  when the position is DELETEd.
+  END-TO-END guarantee across blends and settings changes), and resets when
+  the position is DELETEd or when `entryDate` changes on PUT (a different
+  entry date is a different trade — trade A's ratchet must not stop-out
+  trade B at birth).
 - `journal.mjs` — GET → `{ trades: [] }` (newest first); POST validates trade
   `{ entryDate, exitDate ≥ entryDate, entry>0, exit>0, shares:int>0, initialStop>0, kind?: 'pullback'|'breakout'|'manual', note?≤500 }`,
   assigns `id` (crypto.randomUUID), prepends; DELETE `?id=`. Blobs key `journal`.
 - `status.mjs` — auth'd; returns blobs `source_status` map + `{ blobs: {ok} }` +
-  live-pings Yahoo/Binance/Coinbase/Stooq/CoinGecko (2s timeout each, in parallel)
+  live-pings Yahoo/Binance/Coinbase/Stooq/CoinGecko (2.5s timeout each, in parallel)
   → per-upstream `{ ok, latencyMs | error }`. This is the first-deploy diagnostic.
 - `watch-snapshot.mjs` — SCHEDULED (config in netlify.toml, every 30 min).
-  Scheduler invocations (body carries `next_run`) run unauthenticated; MANUAL calls
-  must pass `x-dashboard-token`, otherwise 401 — and unauthenticated/unauthed
-  responses never include price/stop proximity fields. Fetch quote+btc via sources;
+  Always runs its pass (the scheduler cannot carry our token and body fields are
+  forgeable, so no request data is trusted); responses to callers WITHOUT the
+  dashboard token never include price/stop proximity fields. Fetch quote+btc via sources;
   load settings+position+daily candles; if position open: compute the effective stop
   (chandelier anchored at entryDate; initialStop/stopOverride/stopHighWater floor it
   even when candles fail — an override can never LOWER the stop), ratchet
   `stopHighWater`, and alert via Telegram: `STOP HIT` (price ≤ stop), `STOP NEAR`
   (within 3%), or — when flat — `ENTRY SIGNAL`. Dedupe: Blobs `alerts_sent`
   `{ [conditionId]: {sentAt, stopAtSend} }` — keyed by CONDITION (stop_hit/stop_near/
-  entry_*), resent only after 6h OR a ≥0.5% material stop move; entries pruned after
-  7 days. Never throws — log + exit.
+  entry_*), resent after 6h; stop alerts additionally resend early on a ≥0.5%
+  material stop move (movement-resend never applies when either stop is unknown —
+  entry signals get the plain 6h window); entries pruned after 7 days. Manual HTTP
+  calls run the same pass but position-proximity response fields require the
+  dashboard token (nothing from the request body is ever trusted for auth). The
+  sentinel's high-water write re-reads the position and merges ONLY stopHighWater,
+  skipping if the entry date changed. Never throws — log + exit.
 
 ### netlify/shared/validate.mjs — pure validators (unit-testable)
 - `validateSettings(patch)` → `{ ok, value?, errors? }` — numbers finite & > 0;

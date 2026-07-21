@@ -106,13 +106,17 @@ function Chart({ candles, position, posDerived, trades }) {
       handleScroll: { pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
     })
     chartRef.current = chart
-    // Panels stay mounted while hidden (width 0); on reveal, resize AND
-    // refit — data may have been set while the box had no width.
+    // Panels stay mounted while hidden (width 0); on reveal, resize — and
+    // refit ONLY on the 0→visible transition (data may have been set while
+    // the box had no width). Ordinary resizes keep the user's zoom/pan.
+    let prevWidth = el.clientWidth
     const ro = new ResizeObserver(() => {
-      if (el.clientWidth > 0) {
-        chart.applyOptions({ width: el.clientWidth })
-        chart.timeScale().fitContent()
+      const w = el.clientWidth
+      if (w > 0) {
+        chart.applyOptions({ width: w })
+        if (prevWidth === 0) chart.timeScale().fitContent()
       }
+      prevWidth = w
     })
     ro.observe(el)
     return () => { ro.disconnect(); chart.remove(); chartRef.current = null }

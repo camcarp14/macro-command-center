@@ -42,6 +42,7 @@ function RiskForm({ settingsSrc }) {
     equity: s?.equity ?? '', riskPct: s?.riskPct ?? '', maxPositionPct: s?.maxPositionPct ?? '',
     stopMode: s?.stopMode ?? 'atr', atrMult: s?.atrMult ?? '', stopPct: s?.stopPct ?? '',
     chandelierPeriod: s?.chandelierPeriod ?? '', chandelierMult: s?.chandelierMult ?? '', beAtR: s?.beAtR ?? '',
+    addRiskFraction: s?.addRiskFraction ?? '',
   })
   const [saving, setSaving] = useState(false)
 
@@ -55,6 +56,7 @@ function RiskForm({ settingsSrc }) {
           equity: +f.equity, riskPct: +f.riskPct, maxPositionPct: +f.maxPositionPct,
           stopMode: f.stopMode, atrMult: +f.atrMult, stopPct: +f.stopPct,
           chandelierPeriod: Math.round(+f.chandelierPeriod), chandelierMult: +f.chandelierMult, beAtR: +f.beAtR,
+          addRiskFraction: +f.addRiskFraction,
         }),
       })
       await settingsSrc.reload()
@@ -101,6 +103,10 @@ function RiskForm({ settingsSrc }) {
           <div className="field"><label htmlFor="rf-be">Breakeven at (R)</label>
             <input id="rf-be" type="number" min="0.25" max="5" step="0.25" value={f.beAtR} onChange={set('beAtR')} />
             <span className="hint">once price pays you this many R, the stop jumps to entry</span>
+          </div>
+          <div className="field"><label htmlFor="rf-add">Add-risk fraction</label>
+            <input id="rf-add" type="number" min="0.1" max="1" step="0.05" value={f.addRiskFraction} onChange={set('addRiskFraction')} />
+            <span className="hint">pyramid ADDs risk this fraction of a full unit (0.5 = half risk)</span>
           </div>
         </div>
         <button className="btn primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save risk settings'}</button>
@@ -216,7 +222,10 @@ function PositionForm({ positionSrc, derived }) {
         <div className="formrow">
           <div className="field"><label htmlFor="pf-ov">Manual stop override (optional)</label>
             <input id="pf-ov" type="number" min="0.01" step="0.01" value={f.stopOverride ?? ''} onChange={set('stopOverride')} placeholder="leave empty to trust the trail" />
-            <span className="hint">only ever raises the stop, never lowers it</span>
+            <span className="hint">
+              only ever raises the stop, never lowers it
+              {Number.isFinite(p?.stopHighWater) && ` · ratchet high-water: ${fmtPx(p.stopHighWater)} (a new entry date starts a fresh trade and resets it)`}
+            </span>
           </div>
           <div className="field"><label htmlFor="pf-no">Note</label><input id="pf-no" type="text" maxLength="500" value={f.note} onChange={set('note')} /></div>
         </div>

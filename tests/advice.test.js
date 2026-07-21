@@ -7,6 +7,7 @@ const bullish = () => ({
   freshQuote: { state: 'live' },
   freshBtc: { state: 'live' },
   freshCandles: { state: 'live' },
+  freshBtcCandles: { state: 'live' },
   regime: { state: 'uptrend', score: 100, facts: ['close above EMA20 400'] },
   btcAlign: { aligned: true, state: 'uptrend', score: 80, facts: [] },
   pullback: { stage: 'trigger', facts: ['trigger: close 412.35 reclaimed prior high 408.8'], refHigh: 408.8 },
@@ -134,6 +135,12 @@ describe('honesty constraints', () => {
     const d = composeDirective({ ...bullish(), freshCandles: { state: 'dead' } })
     expect(d.action).toBe('STAND_ASIDE')
     expect(d.headline).toContain('dead')
+  })
+  it('dead BTC HISTORY blocks ENTER too — btcAlign is computed from that feed', () => {
+    const d = composeDirective({ ...bullish(), freshBtcCandles: { state: 'dead' } })
+    expect(d.action).toBe('STAND_ASIDE')
+    expect(d.headline).toContain('BTC history')
+    expect(d.guardrails.length).toBeGreaterThan(0)
   })
   it('dead BTC feed blocks ADD — HOLD carries the blocked-add reason', () => {
     const d = composeDirective(withPosition({

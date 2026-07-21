@@ -5,7 +5,7 @@
 // settings edits and position blends, not just within one computation.
 // Telegram-optional, deduped by condition (not by cent-level stop drift),
 // and never throws — a broken sentinel must not look like a broken market.
-import { json, store, sendTelegram, checkAuth, unauthorized } from '../shared/util.mjs'
+import { json, store, sendTelegram, checkAuth } from '../shared/util.mjs'
 import { mstrQuote, btcSpot, mstrCandles } from '../shared/sources.mjs'
 import { anchoredChandelier, effectiveStop } from '../../src/lib/risk.js'
 import { pullbackSetup, breakout } from '../../src/lib/signals.js'
@@ -16,12 +16,11 @@ const PRUNE_MS = 7 * 24 * 3600 * 1000
 
 export default async (req) => {
   try {
-    // Netlify's scheduler POSTs { next_run }; anything else is a manual call
-    // and must present the dashboard token — otherwise the response would
-    // leak position proximity to the stop to anyone with the URL.
-    const body = await req.json().catch(() => null)
-    const scheduled = body != null && typeof body === 'object' && 'next_run' in body
-    if (!scheduled && !checkAuth(req)) return unauthorized()
+    // Trust nothing from the request: the scheduler can't carry our token
+    // and any body field can be forged, so the pass always runs (its side
+    // effects are dedupe-capped and ratchet-only) — but position-proximity
+    // response fields are gated on the real token check alone.
+    const authed = checkAuth(req)
 
     const s = store()
     const [quote, btc] = await Promise.allSettled([mstrQuote(), btcSpot()])
@@ -65,8 +64,17 @@ export default async (req) => {
       governingStop = Number.isFinite(stop) ? Math.round(stop * 100) / 100 : null
 
       // Ratchet the persisted high-water mark — the end-to-end guarantee.
+      // Re-read first and merge ONLY stopHighWater into the freshest copy:
+      // candle fetches above took seconds, and clobbering a user PUT that
+      // landed meanwhile would silently revert their position edit. Skip
+      // entirely if the trade identity changed under us.
       if (governingStop != null && governingStop > (position.stopHighWater ?? -Infinity)) {
-        try { await s.setJSON('position', { ...position, stopHighWater: governingStop }) } catch { /* next run retries */ }
+        try {
+          const current = await s.get('position', { type: 'json' })
+          if (current && current.entryDate === position.entryDate && governingStop > (current.stopHighWater ?? -Infinity)) {
+            await s.setJSON('position', { ...current, stopHighWater: governingStop })
+          }
+        } catch { /* next run retries */ }
       }
 
       if (governingStop != null) {
@@ -96,9 +104,12 @@ export default async (req) => {
       }
       for (const a of alerts) {
         const prev = log[a.key]
+        // Movement-based resend only ever WIDENS resending when BOTH stops
+        // are known; with either side null (entry signals) it must default
+        // to 0 (suppressed) or the 6h window silently stops existing.
         const stopMovedPct = prev?.stopAtSend != null && a.stop != null
           ? Math.abs(a.stop - prev.stopAtSend) / prev.stopAtSend * 100
-          : Infinity
+          : 0
         if (prev && now - prev.sentAt < DEDUPE_MS && stopMovedPct < RESEND_ON_STOP_MOVE_PCT) continue
         const res = await sendTelegram(a.text)
         if (res.sent) { log[a.key] = { sentAt: now, stopAtSend: a.stop }; sent++ }
@@ -106,8 +117,9 @@ export default async (req) => {
       await s.setJSON('alerts_sent', log)
     }
     const summary = { ok: true, alertsConsidered: alerts.length, alertsSent: sent }
-    // Position-proximity details only for the scheduler / authed callers.
-    return json(scheduled || checkAuth(req) ? { ...summary, mstrPx, btcPx, governingStop } : summary)
+    // Position-proximity details for token-bearing callers ONLY — the
+    // scheduler ignores the response body, so it loses nothing.
+    return json(authed ? { ...summary, mstrPx, btcPx, governingStop } : summary)
   } catch (e) {
     console.error('watch-snapshot failed:', e)
     return json({ ok: false, error: String(e?.message || e) })

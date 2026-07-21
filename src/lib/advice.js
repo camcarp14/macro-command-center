@@ -12,6 +12,7 @@ export function composeDirective(input = {}) {
     freshQuote = { state: 'dead' },
     freshBtc = { state: 'dead' },
     freshCandles = { state: 'dead' },
+    freshBtcCandles = { state: 'dead' },
     regime = { state: 'insufficient_data', facts: [] },
     btcAlign = { aligned: false, state: 'insufficient_data', facts: [] },
     pullback = { stage: 'none', facts: [] },
@@ -30,6 +31,7 @@ export function composeDirective(input = {}) {
   if (freshQuote.state !== 'live') guardrails.push(`MSTR data is ${freshQuote.state} — treat every number below with suspicion`)
   if (freshBtc.state !== 'live') guardrails.push(`BTC data is ${freshBtc.state}`)
   if (freshCandles.state !== 'live') guardrails.push(`price history is ${freshCandles.state} — regime and trigger reads are running on old tape`)
+  if (freshBtcCandles.state !== 'live') guardrails.push(`BTC history is ${freshBtcCandles.state} — the BTC-confirmation read is running on old tape`)
   if (torque?.read?.grade === 'rich') guardrails.push(`torque is RICH: ${torque.read.text} — you're paying up for the leverage`)
   if (marketSession === 'closed') guardrails.push('market closed (approx NYSE hours) — prices are last session\'s')
 
@@ -75,10 +77,13 @@ export function composeDirective(input = {}) {
     ], guardrails, 'act')
   }
 
-  // Feeds that must be alive before ANY new risk goes on.
+  // Feeds that must be alive before ANY new risk goes on. BTC candles are
+  // included: btcAlign is computed FROM them, so a dead btc-candle feed
+  // means the alignment gate itself is running blind.
   const deadFeeds = [
     freshBtc.state === 'dead' && 'BTC',
     freshCandles.state === 'dead' && 'price history',
+    freshBtcCandles.state === 'dead' && 'BTC history',
   ].filter(Boolean)
 
   // 5 — pyramid add (spec conditions; blocked adds surface in HOLD, not silence)

@@ -162,7 +162,7 @@ export default function App() {
     // prefer the exchange's own session state when the quote is live
     const marketSession = (freshQuote.state === 'live' && quote.data?.marketState) || nyseSessionState(now)
     const directive = composeDirective({
-      price, freshQuote, freshBtc, freshCandles,
+      price, freshQuote, freshBtc, freshCandles, freshBtcCandles,
       regime: reg, btcAlign: align, pullback: pb, breakout: bo,
       exitFlags: flags,
       position: position ? { shares: position.shares, avgEntry: position.avgEntry, initialStop: position.initialStop } : null,
@@ -245,10 +245,18 @@ function Ticker({ sym, px, chg, fresh, kind, delayedMin, sourceDetail }) {
 
 function TokenGate({ onDone }) {
   const [val, setVal] = useState('')
+  // If a token is already stored yet we're back at the gate, that token was
+  // rejected — say so instead of looping a silent identical screen.
+  const [rejected] = useState(() => !!sessionStorage.getItem('torque_token'))
   return (
     <div className="gate">
       <div className="card">
         <div className="ttl">⚡ Torque — access token</div>
+        {rejected && (
+          <div className="error-row" style={{ marginBottom: 12 }} role="alert">
+            <span>That token was rejected — check <code>DASHBOARD_TOKEN</code> in your Netlify environment.</span>
+          </div>
+        )}
         <p className="sub">This cockpit is protected by a shared secret (the <code>DASHBOARD_TOKEN</code> you set on Netlify). Paste it once; it stays in this browser session only.</p>
         <form onSubmit={(e) => { e.preventDefault(); sessionStorage.setItem('torque_token', val.trim()); onDone() }}>
           <div className="field">

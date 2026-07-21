@@ -99,9 +99,10 @@ export function effectiveStop({ initialStop, trailStop, entry, beAtR = 1, highes
   if (
     Number.isFinite(entry) && Number.isFinite(initialStop) && Number.isFinite(highestCloseSinceEntry) &&
     entry - initialStop > 0 &&
-    // compare in cents: at cent-quantized prices the raw float threshold can
-    // land one ULP above the decimal value and miss the >= boundary at +1R
-    round2(highestCloseSinceEntry) >= round2(entry + beAtR * (entry - initialStop))
+    // float-noise epsilon only: a raw compare misses the exact +1R boundary
+    // by one ULP, but rounding both sides to cents would arm breakeven up to
+    // half a cent EARLY — the epsilon fixes the former without the latter
+    highestCloseSinceEntry >= entry + beAtR * (entry - initialStop) - 1e-9
   ) {
     candidates.push(entry)
   }
