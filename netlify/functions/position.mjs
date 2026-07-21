@@ -16,7 +16,16 @@ export default async (req) => {
     const body = await req.json().catch(() => null)
     const v = validatePosition(body)
     if (!v.ok) return json({ error: 'validation failed', errors: v.errors }, 400)
-    const position = { ...v.value, updatedAt: Date.now() }
+    // The stop high-water mark survives edits and only ratchets up — this is
+    // what makes "the stop only ever rises" hold across position blends and
+    // settings changes. It resets only when the position is cleared.
+    const prev = await s.get('position', { type: 'json' })
+    const stopHighWater = Math.max(
+      prev?.stopHighWater ?? -Infinity,
+      v.value.initialStop,
+      v.value.stopOverride ?? -Infinity,
+    )
+    const position = { ...v.value, stopHighWater: Number.isFinite(stopHighWater) ? stopHighWater : null, updatedAt: Date.now() }
     await s.setJSON('position', position)
     return json({ position })
   }

@@ -22,7 +22,10 @@ export function validateSettings(patch) {
   const errors = []
   const value = {}
   for (const [k, v] of Object.entries(patch)) {
-    const rule = SETTINGS_RULES[k]
+    // Object.hasOwn, not a bare lookup: keys like "hasOwnProperty" or
+    // "constructor" must be rejected as unknown, not resolved up the
+    // prototype chain into a rule-shaped object.
+    const rule = Object.hasOwn(SETTINGS_RULES, k) ? SETTINGS_RULES[k] : undefined
     if (!rule) { errors.push(`unknown setting: ${k}`); continue }
     if (rule.enum) {
       if (!rule.enum.includes(v)) { errors.push(`${k} must be one of ${rule.enum.join('/')}`); continue }
@@ -47,6 +50,7 @@ export function validatePosition(body) {
   if (!Number.isFinite(initialStop) || initialStop <= 0) errors.push('initialStop must be a positive number')
   else if (Number.isFinite(avgEntry) && initialStop >= avgEntry) errors.push('initialStop must be below avgEntry')
   if (stopOverride != null && (!Number.isFinite(stopOverride) || stopOverride <= 0)) errors.push('stopOverride must be a positive number or null')
+  else if (stopOverride != null && Number.isFinite(initialStop) && stopOverride < initialStop) errors.push('stopOverride can only raise the stop — it must be at or above initialStop')
   if (typeof note !== 'string' || note.length > 500) errors.push('note must be a string ≤ 500 chars')
   if (errors.length) return err(errors)
   return { ok: true, value: { shares, avgEntry, entryDate, initialStop, stopOverride, note } }

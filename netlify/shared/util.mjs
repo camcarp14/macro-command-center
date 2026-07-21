@@ -4,9 +4,13 @@
 //   3. Per-source health recording into Netlify Blobs so /api/status
 //      reflects reality, not hope.
 import { getStore } from '@netlify/blobs'
+import { createHash, timingSafeEqual } from 'node:crypto'
 
+// Strong consistency, not the default eventual: journal/settings/position do
+// read-modify-write, and an eventually-consistent read can silently drop a
+// trade logged 20 seconds earlier — even for one sequential user.
 export function store() {
-  return getStore('torque')
+  return getStore({ name: 'torque', consistency: 'strong' })
 }
 
 export function unauthorized() {
@@ -16,7 +20,11 @@ export function unauthorized() {
 export function checkAuth(req) {
   const required = process.env.DASHBOARD_TOKEN
   if (!required) return true
-  return req.headers.get('x-dashboard-token') === required
+  const given = req.headers.get('x-dashboard-token') || ''
+  // hash both sides then constant-time compare — no early-exit oracle
+  const a = createHash('sha256').update(given).digest()
+  const b = createHash('sha256').update(required).digest()
+  return timingSafeEqual(a, b)
 }
 
 export function json(body, status = 200, extraHeaders = {}) {

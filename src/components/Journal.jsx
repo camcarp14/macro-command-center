@@ -4,7 +4,8 @@
 import React, { useMemo, useState } from 'react'
 import { rMultiple } from '../lib/risk.js'
 import { useToast, SkCard } from './primitives.jsx'
-import { api, fmtPx, round2 } from '../App.jsx'
+import { api } from '../lib/api.js'
+import { fmtPx, round2 } from '../lib/format.js'
 
 export default function Journal({ journalSrc }) {
   const toast = useToast()
@@ -22,7 +23,13 @@ export default function Journal({ journalSrc }) {
     if (!rs.length) return null
     const wins = rs.filter((r) => r > 0).length
     let cum = 0
-    const curve = rs.slice().reverse().map((r) => (cum += r)) // oldest → newest
+    // chronological by EXIT DATE, not storage order — back-filled trades
+    // must not invert the drawdown story
+    const curve = withR
+      .filter((t) => t.r != null)
+      .slice()
+      .sort((a, b) => a.exitDate.localeCompare(b.exitDate))
+      .map((t) => (cum += t.r))
     return {
       n: rs.length,
       winRate: Math.round((wins / rs.length) * 100),

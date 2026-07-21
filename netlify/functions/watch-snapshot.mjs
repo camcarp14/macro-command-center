@@ -1,84 +1,113 @@
 // Scheduled sentinel (every 30 min, netlify.toml). Watches the stop even
 // when the app is closed: STOP HIT / STOP NEAR alerts on an open position,
-// ENTRY SIGNAL when flat. Telegram-optional, deduped, and never throws —
-// a broken sentinel must not look like a broken market.
-import { json, store, sendTelegram } from '../shared/util.mjs'
+// ENTRY SIGNAL when flat. It also RATCHETS the persisted stop high-water
+// mark, which is what makes "the stop only ever rises" true across
+// settings edits and position blends, not just within one computation.
+// Telegram-optional, deduped by condition (not by cent-level stop drift),
+// and never throws — a broken sentinel must not look like a broken market.
+import { json, store, sendTelegram, checkAuth, unauthorized } from '../shared/util.mjs'
 import { mstrQuote, btcSpot, mstrCandles } from '../shared/sources.mjs'
 import { anchoredChandelier, effectiveStop } from '../../src/lib/risk.js'
 import { pullbackSetup, breakout } from '../../src/lib/signals.js'
 
 const DEDUPE_MS = 6 * 3600 * 1000
-const SPARK_CAP = 400
+const RESEND_ON_STOP_MOVE_PCT = 0.5
+const PRUNE_MS = 7 * 24 * 3600 * 1000
 
-export default async () => {
+export default async (req) => {
   try {
+    // Netlify's scheduler POSTs { next_run }; anything else is a manual call
+    // and must present the dashboard token — otherwise the response would
+    // leak position proximity to the stop to anyone with the URL.
+    const body = await req.json().catch(() => null)
+    const scheduled = body != null && typeof body === 'object' && 'next_run' in body
+    if (!scheduled && !checkAuth(req)) return unauthorized()
+
     const s = store()
     const [quote, btc] = await Promise.allSettled([mstrQuote(), btcSpot()])
     const mstrPx = quote.status === 'fulfilled' ? quote.value.price : null
     const btcPx = btc.status === 'fulfilled' ? btc.value.price : null
-
-    // spark history for the "since you left" strip
-    try {
-      const hist = (await s.get('spark_history', { type: 'json' })) || []
-      hist.push({ t: Date.now(), mstr: mstrPx, btc: btcPx })
-      await s.setJSON('spark_history', hist.slice(-SPARK_CAP))
-    } catch { /* history is a nicety, never a failure */ }
 
     if (mstrPx == null) return json({ ok: false, reason: 'no MSTR price; skipping alert pass' })
 
     const settings = { chandelierPeriod: 22, chandelierMult: 3, beAtR: 1, ...((await s.get('settings', { type: 'json' })) || {}) }
     const position = await s.get('position', { type: 'json' })
     const alerts = []
+    let governingStop = null
 
     if (position) {
-      const { candles } = await mstrCandles('1d')
-      const entryIdx = candles.findIndex((c) => new Date(c.t * 1000).toISOString().slice(0, 10) >= position.entryDate)
-      let stop = position.stopOverride ?? position.initialStop
-      if (entryIdx >= 0) {
-        const trail = anchoredChandelier(candles, {
-          entryIdx,
-          atrPeriod: settings.chandelierPeriod,
-          mult: settings.chandelierMult,
-          initialStop: position.initialStop,
-        })
-        let hcse = -Infinity
-        for (let k = entryIdx; k < candles.length; k++) hcse = Math.max(hcse, candles[k].c)
-        stop = effectiveStop({
-          initialStop: position.initialStop,
-          trailStop: trail.length ? trail[trail.length - 1] : null,
-          entry: position.avgEntry,
-          beAtR: settings.beAtR,
-          highestCloseSinceEntry: hcse,
-        }) ?? stop
-        if (Number.isFinite(position.stopOverride)) stop = Math.max(stop, position.stopOverride)
+      // Fallback before candles resolve: never let an override LOWER the stop.
+      let stop = Math.max(position.initialStop, position.stopOverride ?? -Infinity, position.stopHighWater ?? -Infinity)
+      try {
+        const { candles } = await mstrCandles('1d')
+        const entryIdx = candles.findIndex((c) => new Date(c.t * 1000).toISOString().slice(0, 10) >= position.entryDate)
+        if (entryIdx >= 0) {
+          const trail = anchoredChandelier(candles, {
+            entryIdx,
+            atrPeriod: settings.chandelierPeriod,
+            mult: settings.chandelierMult,
+            initialStop: position.initialStop,
+          })
+          let hcse = -Infinity
+          for (let k = entryIdx; k < candles.length; k++) hcse = Math.max(hcse, candles[k].c)
+          const eff = effectiveStop({
+            initialStop: position.initialStop,
+            trailStop: trail.length ? trail[trail.length - 1] : null,
+            entry: position.avgEntry,
+            beAtR: settings.beAtR,
+            highestCloseSinceEntry: hcse,
+          })
+          if (Number.isFinite(eff)) stop = Math.max(stop, eff)
+          if (Number.isFinite(position.stopOverride)) stop = Math.max(stop, position.stopOverride)
+        }
+      } catch { /* candles down: the initialStop/override/high-water floor still guards */ }
+
+      governingStop = Number.isFinite(stop) ? Math.round(stop * 100) / 100 : null
+
+      // Ratchet the persisted high-water mark — the end-to-end guarantee.
+      if (governingStop != null && governingStop > (position.stopHighWater ?? -Infinity)) {
+        try { await s.setJSON('position', { ...position, stopHighWater: governingStop }) } catch { /* next run retries */ }
       }
-      if (Number.isFinite(stop)) {
-        if (mstrPx <= stop) {
-          alerts.push({ key: `stop_hit_${stop.toFixed(2)}`, text: `🔴 TORQUE: STOP HIT — MSTR ${mstrPx} at/under stop ${stop.toFixed(2)}. Sell ${position.shares} shares per plan.` })
-        } else if ((mstrPx - stop) / mstrPx <= 0.03) {
-          alerts.push({ key: `stop_near_${stop.toFixed(2)}`, text: `🟠 TORQUE: STOP NEAR — MSTR ${mstrPx}, stop ${stop.toFixed(2)} (${(((mstrPx - stop) / mstrPx) * 100).toFixed(1)}% away).` })
+
+      if (governingStop != null) {
+        if (mstrPx <= governingStop) {
+          alerts.push({ key: 'stop_hit', stop: governingStop, text: `🔴 TORQUE: STOP HIT — MSTR ${mstrPx} at/under stop ${governingStop.toFixed(2)}. Sell ${position.shares} shares per plan.` })
+        } else if ((mstrPx - governingStop) / mstrPx <= 0.03) {
+          alerts.push({ key: 'stop_near', stop: governingStop, text: `🟠 TORQUE: STOP NEAR — MSTR ${mstrPx}, stop ${governingStop.toFixed(2)} (${(((mstrPx - governingStop) / mstrPx) * 100).toFixed(1)}% away).` })
         }
       }
     } else {
       const { candles } = await mstrCandles('1d')
       const pb = pullbackSetup(candles)
       const bo = breakout(candles)
-      if (pb.stage === 'trigger') alerts.push({ key: 'entry_pullback', text: `🟢 TORQUE: ENTRY SIGNAL — pullback trigger on MSTR at ${mstrPx}. Open the cockpit before acting.` })
-      else if (bo.active) alerts.push({ key: 'entry_breakout', text: `🟢 TORQUE: ENTRY SIGNAL — breakout over ${bo.level} on MSTR at ${mstrPx}. Open the cockpit before acting.` })
+      if (pb.stage === 'trigger') alerts.push({ key: 'entry_pullback', stop: null, text: `🟢 TORQUE: ENTRY SIGNAL — pullback trigger on MSTR at ${mstrPx}. Open the cockpit before acting.` })
+      else if (bo.active) alerts.push({ key: 'entry_breakout', stop: null, text: `🟢 TORQUE: ENTRY SIGNAL — breakout over ${bo.level} on MSTR at ${mstrPx}. Open the cockpit before acting.` })
     }
 
     let sent = 0
     if (alerts.length) {
+      // Dedupe by CONDITION id, resending only when the suppression window
+      // lapses or the governing stop has moved materially — cent-level trail
+      // drift must not mint fresh alert spam every bar-roll.
       const log = (await s.get('alerts_sent', { type: 'json' })) || {}
       const now = Date.now()
+      for (const k of Object.keys(log)) {
+        if (now - (log[k]?.sentAt ?? 0) > PRUNE_MS) delete log[k]
+      }
       for (const a of alerts) {
-        if (log[a.key] && now - log[a.key] < DEDUPE_MS) continue
+        const prev = log[a.key]
+        const stopMovedPct = prev?.stopAtSend != null && a.stop != null
+          ? Math.abs(a.stop - prev.stopAtSend) / prev.stopAtSend * 100
+          : Infinity
+        if (prev && now - prev.sentAt < DEDUPE_MS && stopMovedPct < RESEND_ON_STOP_MOVE_PCT) continue
         const res = await sendTelegram(a.text)
-        if (res.sent) { log[a.key] = now; sent++ }
+        if (res.sent) { log[a.key] = { sentAt: now, stopAtSend: a.stop }; sent++ }
       }
       await s.setJSON('alerts_sent', log)
     }
-    return json({ ok: true, mstrPx, btcPx, alertsConsidered: alerts.length, alertsSent: sent })
+    const summary = { ok: true, alertsConsidered: alerts.length, alertsSent: sent }
+    // Position-proximity details only for the scheduler / authed callers.
+    return json(scheduled || checkAuth(req) ? { ...summary, mstrPx, btcPx, governingStop } : summary)
   } catch (e) {
     console.error('watch-snapshot failed:', e)
     return json({ ok: false, error: String(e?.message || e) })

@@ -2,9 +2,9 @@
 // entry plan, torque, and regime reads support it. Every number wears its
 // freshness; every claim shows its work.
 import React, { useState } from 'react'
-import { Num, SkPage, Expand, FreshChip } from './primitives.jsx'
+import { SkPage, Expand, FreshChip } from './primitives.jsx'
 import { sizePosition, initialStop } from '../lib/risk.js'
-import { fmtPx, round2 } from '../App.jsx'
+import { fmtPx, round2 } from '../lib/format.js'
 
 const ACTION_COPY = {
   ENTER: 'Enter long',
@@ -22,13 +22,20 @@ export default function Cockpit({ derived, settings, position, sources, onReload
   if (loading && !derived.price) return <SkPage cards={4} />
 
   const d = derived.directive
-  const anyError = sources.quote.error || sources.btc.error || sources.mstr1d.error
+  const failing = [
+    sources.quote.error && 'MSTR quote',
+    sources.btc.error && 'BTC',
+    sources.mstr1d.error && 'MSTR history',
+    sources.btc1d.error && 'BTC history',
+    sources.settingsSrc.error && 'settings',
+    sources.positionSrc.error && 'position',
+  ].filter(Boolean)
 
   return (
     <div className="grid stagger" data-testid="cockpit">
-      {anyError && (
+      {failing.length > 0 && (
         <div className="error-row span2" role="alert">
-          <span>Source trouble: {[sources.quote.error && 'MSTR quote', sources.btc.error && 'BTC', sources.mstr1d.error && 'MSTR history'].filter(Boolean).join(' · ')} — showing what's still trustworthy.</span>
+          <span>Source trouble: {failing.join(' · ')} — showing what's still trustworthy.</span>
           <button className="btn sm" onClick={onReload}>Retry</button>
         </div>
       )}
@@ -52,8 +59,8 @@ export default function Cockpit({ derived, settings, position, sources, onReload
       {position && <PositionCard derived={derived} position={position} />}
       <EntryPlanner derived={derived} settings={settings} hasPosition={!!position} />
       <TorqueCard derived={derived} settings={settings} />
-      <RegimeCard title="MSTR regime" read={derived.regime} extra={derived.pullback} breakout={derived.breakout} />
-      <RegimeCard title="BTC confirmation" read={derived.btcAlign} />
+      <RegimeCard title="MSTR regime" read={derived.regime} extra={derived.pullback} breakout={derived.breakout} fresh={derived.freshCandles} />
+      <RegimeCard title="BTC confirmation" read={derived.btcAlign} fresh={derived.freshBtcCandles} />
     </div>
   )
 }
@@ -182,12 +189,13 @@ function TorqueCard({ derived, settings }) {
   )
 }
 
-function RegimeCard({ title, read, extra, breakout }) {
+function RegimeCard({ title, read, extra, breakout, fresh }) {
   const [open, setOpen] = useState(false)
   return (
     <section className="card">
       <div className="ttl">{title}
         <span className="spacer" />
+        <FreshChip fresh={fresh} />
         <span className={`badge-regime ${read.state}`}>{read.state.replace('_', ' ')}{read.score != null ? ` ${read.score}` : ''}</span>
       </div>
       {extra && extra.stage !== 'none' && (

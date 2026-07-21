@@ -1,13 +1,26 @@
 // Settings: risk parameters (the discipline), MSTR balance-sheet inputs
 // (the honesty), the open position editor, and source health.
 import React, { useEffect, useState } from 'react'
-import { useToast, SkCard, FreshChip } from './primitives.jsx'
-import { api, fmtPx, round2 } from '../App.jsx'
+import { useToast, SkCard } from './primitives.jsx'
+import { api } from '../lib/api.js'
+import { fmtPx } from '../lib/format.js'
 
 export default function Settings({ settingsSrc, positionSrc, derived }) {
   if (settingsSrc.loading && !settingsSrc.data) return <div className="grid"><SkCard /><SkCard /></div>
   return (
     <div className="grid stagger" data-testid="settings">
+      {settingsSrc.error && (
+        <div className="error-row span2" role="alert">
+          <span>Settings unavailable: {settingsSrc.error} — the risk engine is flying without your parameters.</span>
+          <button className="btn sm" onClick={settingsSrc.reload}>Retry</button>
+        </div>
+      )}
+      {positionSrc.error && (
+        <div className="error-row span2" role="alert">
+          <span>Position unavailable: {positionSrc.error}</span>
+          <button className="btn sm" onClick={positionSrc.reload}>Retry</button>
+        </div>
+      )}
       <RiskForm settingsSrc={settingsSrc} />
       <BalanceSheetForm settingsSrc={settingsSrc} />
       <PositionForm positionSrc={positionSrc} derived={derived} />

@@ -34,8 +34,14 @@ export function dailyLogReturns(closes) {
 /**
  * Rolling beta of MSTR on BTC over a trailing window of log returns.
  * series[i] is the beta of the window ENDING at return i (null until seeded).
+ * REQUIRES day-aligned, equal-length inputs (use alignByDay): head-pairing
+ * two different-length series would regress unrelated days into a
+ * plausible-looking garbage beta, so unequal lengths are refused outright.
  */
 export function rollingBeta(mstrCloses, btcCloses, window = 30) {
+  if ((mstrCloses?.length ?? 0) !== (btcCloses?.length ?? 0)) {
+    return { latest: null, series: [], warning: 'unaligned_series' }
+  }
   const rm = dailyLogReturns(mstrCloses)
   const rb = dailyLogReturns(btcCloses)
   const n = Math.min(rm.length, rb.length)
@@ -100,10 +106,10 @@ export function torqueRead({ beta, mNav }) {
   if (!Number.isFinite(beta) || !Number.isFinite(mNav) || mNav <= 0) {
     return { grade: 'unknown', ratio: null, text: 'torque unknown — beta or mNAV unavailable' }
   }
-  const ratio = r2(beta / mNav)
-  const grade = ratio > 1.1 ? 'efficient' : ratio >= 0.9 ? 'fair' : 'rich'
+  const raw = beta / mNav // grade on the unrounded quotient; round for display
+  const grade = raw > 1.1 ? 'efficient' : raw >= 0.9 ? 'fair' : 'rich'
   const text = `1% BTC move ≈ ${r2(beta)}% MSTR; you pay ${r2(mNav)}× NAV for it (${grade})`
-  return { grade, ratio, text }
+  return { grade, ratio: r2(raw), text }
 }
 
 function r2(x) { return Math.round(x * 100) / 100 }

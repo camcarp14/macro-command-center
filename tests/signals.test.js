@@ -66,6 +66,19 @@ describe('pullbackSetup', () => {
   it('insufficient data → none', () => {
     expect(pullbackSetup(trendUp(30)).stage).toBe('none')
   })
+  it('a single flush-and-rip bar is NOT a pullback trigger (dip must precede the trigger bar)', () => {
+    // clean uptrend, then ONE wide-range bar that flushes to EMA20 intraday
+    // and closes above the prior high — news bar, not a pullback
+    const closes = []
+    let px = 100
+    for (let i = 0; i < 60; i++) { closes.push(px); px *= 1.01 }
+    closes.push(closes[59] * 1.03)
+    let candles = candlesFromCloses(closes)
+    const e20 = ema(closes, 20)
+    const last = candles.length - 1
+    candles = patchCandles(candles, { [last]: { l: Math.round(e20[last] * 100) / 100 } })
+    expect(pullbackSetup(candles).stage).toBe('none')
+  })
 })
 
 describe('breakout', () => {
@@ -84,6 +97,13 @@ describe('breakout', () => {
   })
   it('insufficient data guards', () => {
     expect(breakout(trendUp(40)).active).toBe(false)
+  })
+  it('compares against the UNROUNDED level — sub-cent prices cannot fake a breakout', () => {
+    // prior high 100.004 (rounds down to 100.00): a 100.002 close is BELOW
+    // the true level and must not read active
+    const flat = Array.from({ length: 70 }, () => 100.004)
+    expect(breakout(candlesFromCloses([...flat, 100.002], { spreadPct: 0 })).active).toBe(false)
+    expect(breakout(candlesFromCloses([...flat, 100.005], { spreadPct: 0 })).active).toBe(true)
   })
 })
 

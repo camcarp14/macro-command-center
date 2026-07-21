@@ -26,13 +26,19 @@ export function ageLabel(ageSec) {
 }
 
 /**
- * Approximate NYSE session: Mon–Fri 13:30–20:00 UTC. No holiday calendar —
- * the UI labels this "approx" and it only softens copy, never blocks data.
+ * Approximate NYSE session, DST-aware: Mon–Fri 09:30–16:00 in
+ * America/New_York (via Intl, so EST/EDT are both right). No holiday
+ * calendar — the UI labels this "approx" and it only softens copy, never
+ * blocks data. Callers should prefer the exchange's own marketState from
+ * the quote feed when it's available.
  */
 export function nyseSessionState(nowMs = Date.now()) {
-  const d = new Date(nowMs)
-  const day = d.getUTCDay()
-  if (day === 0 || day === 6) return 'closed'
-  const mins = d.getUTCHours() * 60 + d.getUTCMinutes()
-  return mins >= 810 && mins < 1200 ? 'open' : 'closed'
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
+  }).formatToParts(new Date(nowMs))
+  const get = (t) => parts.find((p) => p.type === t)?.value
+  const day = get('weekday')
+  if (day === 'Sat' || day === 'Sun') return 'closed'
+  const mins = Number(get('hour')) * 60 + Number(get('minute'))
+  return mins >= 570 && mins < 960 ? 'open' : 'closed'
 }

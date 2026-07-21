@@ -8,13 +8,15 @@ import { fetchWithTimeout } from './util.mjs'
 
 const UA = { 'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36' }
 
-async function getJson(url, opts = {}, timeoutMs = 8000) {
+// Per-attempt budget of 3s: Netlify kills synchronous functions at ~10s, so
+// an 8s hang on the primary would starve the fallbacks the chain exists for.
+async function getJson(url, opts = {}, timeoutMs = 3000) {
   const res = await fetchWithTimeout(url, { ...opts, headers: { accept: 'application/json', ...UA, ...(opts.headers || {}) } }, timeoutMs)
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`)
   return res.json()
 }
 
-async function getText(url, timeoutMs = 8000) {
+async function getText(url, timeoutMs = 3000) {
   const res = await fetchWithTimeout(url, { headers: UA }, timeoutMs)
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`)
   return res.text()
@@ -158,7 +160,10 @@ export async function btcSpot() {
   return tryChain(chain, 'btc spot')
 }
 
-/** BTC candles: Binance klines → Coinbase → CoinGecko OHLC (volumeless). */
+/** BTC candles: Binance klines → Coinbase. CoinGecko is deliberately NOT a
+ *  daily fallback: its /ohlc auto-granularity serves 4-DAY candles for long
+ *  ranges, and 4-day bars labeled '1d' would silently poison the BTC regime
+ *  read. For 30m only, days=1 keeps it in the true 30-minute tier. */
 export async function btcCandles(tf) {
   const isDay = tf !== '30m'
   const chain = [
@@ -172,11 +177,11 @@ export async function btcCandles(tf) {
         `https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=${isDay ? 86400 : 1800}`)),
       sourceDetail: 'coinbase',
     }),
-    async () => ({
+    ...(!isDay ? [async () => ({
       candles: parseCoingeckoOhlc(await getJson(
-        `https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=${isDay ? 365 : 7}`)),
-      sourceDetail: 'coingecko (no volume)',
-    }),
+        'https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=1')),
+      sourceDetail: 'coingecko (no volume, 30m tier)',
+    })] : []),
   ]
   const out = await tryChain(chain, 'btc candles')
   if (!out.candles?.length) throw new Error('btc candles: all sources empty')

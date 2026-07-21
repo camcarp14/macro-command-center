@@ -1,8 +1,11 @@
 // Deterministic API mocks for hermetic e2e. The scenario data is built with
 // the SAME fixture generators and engine libs the unit tests use, so the
-// expected numbers are computed, never hardcoded.
+// expected numbers are computed, never hardcoded — and the CRUD mocks run
+// the REAL validators, so a UI change that ships invalid bodies fails here,
+// not in production.
 import { genCandles, candlesFromCloses, patchCandles } from '../tests/fixtures.js'
 import { ema } from '../src/lib/ta.js'
+import { validateSettings, validatePosition, validateTrade } from '../netlify/shared/validate.mjs'
 
 export const SETTINGS = {
   equity: 100000, riskPct: 1, maxPositionPct: 30, stopMode: 'atr', atrMult: 2.5, stopPct: 8,
@@ -58,26 +61,43 @@ export async function installApi(page, { data = payloads(), overrides = {}, jour
     }
 
     const ok = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+    const badReq = (v) => route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'validation failed', errors: v.errors }) })
     switch (key) {
       case 'quote': return ok(data.quote)
       case 'btc': return ok(data.btcSpot)
       case 'candlesMstr': return ok(data.candlesMstr)
       case 'candlesBtc': return ok(data.candlesBtc)
       case 'settings':
-        if (method === 'PUT') { state.settings = { ...state.settings, ...JSON.parse(route.request().postData() || '{}') } }
+        if (method === 'PUT') {
+          const v = validateSettings(JSON.parse(route.request().postData() || '{}'))
+          if (!v.ok) return badReq(v)
+          const today = new Date().toISOString().slice(0, 10)
+          state.settings = { ...state.settings, ...v.value }
+          if ('btcHoldings' in v.value) { state.settings.btcHoldingsSeeded = false; state.settings.btcHoldingsAsOf = today }
+          if ('sharesOutstanding' in v.value) { state.settings.sharesSeeded = false; state.settings.sharesOutstandingAsOf = today }
+        }
         return ok({ settings: state.settings })
       case 'position':
-        if (method === 'PUT') { state.position = { ...JSON.parse(route.request().postData() || '{}'), updatedAt: Date.now() } }
+        if (method === 'PUT') {
+          const v = validatePosition(JSON.parse(route.request().postData() || '{}'))
+          if (!v.ok) return badReq(v)
+          const stopHighWater = Math.max(state.position?.stopHighWater ?? -Infinity, v.value.initialStop, v.value.stopOverride ?? -Infinity)
+          state.position = { ...v.value, stopHighWater: Number.isFinite(stopHighWater) ? stopHighWater : null, updatedAt: Date.now() }
+        }
         if (method === 'DELETE') state.position = null
         return ok({ position: state.position })
       case 'journal':
         if (method === 'POST') {
-          const t = { id: `t${state.journal.length + 1}`, ...JSON.parse(route.request().postData() || '{}'), createdAt: Date.now() }
+          const v = validateTrade(JSON.parse(route.request().postData() || '{}'))
+          if (!v.ok) return badReq(v)
+          const t = { id: `t${state.journal.length + 1}`, ...v.value, createdAt: Date.now() }
           state.journal.unshift(t)
           return ok({ trade: t, trades: state.journal })
         }
         if (method === 'DELETE') {
+          const before = state.journal.length
           state.journal = state.journal.filter((t) => t.id !== url.searchParams.get('id'))
+          if (state.journal.length === before) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"not found"}' })
         }
         return ok({ trades: state.journal })
       case 'status': return ok({ pings: { yahoo: { ok: true, httpStatus: 200, latencyMs: 80 } }, sourceStatus: {}, blobs: { ok: true } })

@@ -50,10 +50,12 @@ export function regime(candles) {
 }
 
 /**
- * Pullback-in-uptrend, two stages. setup: within the last 3 bars a low came
- * within 1.5% of EMA20 (or under it) while that bar's close held above
- * EMA50. trigger: setup held AND the latest close reclaimed the previous
- * bar's high — the classic "add on the way up" entry.
+ * Pullback-in-uptrend, two stages. setup: within the 3 bars BEFORE the
+ * current bar a low came within 1.5% of EMA20 (or under it) while that
+ * bar's close held above EMA50. trigger: setup held AND the latest close
+ * reclaimed the previous bar's high — the classic "add on the way up"
+ * entry. The dip window deliberately excludes the current bar: a single
+ * wide-range flush-and-rip bar is news, not a pullback.
  */
 export function pullbackSetup(candles) {
   if (!Array.isArray(candles) || candles.length < MIN_BARS) {
@@ -68,7 +70,7 @@ export function pullbackSetup(candles) {
   const e50 = ema(closes, 50)
   const last = candles.length - 1
   let touched = null
-  for (let i = last - 2; i <= last; i++) {
+  for (let i = last - 3; i < last; i++) {
     if (i < 0 || e20[i] == null || e50[i] == null) continue
     if (candles[i].l <= e20[i] * 1.015 && candles[i].c >= e50[i]) { touched = i; break }
   }
@@ -95,13 +97,12 @@ export function breakout(candles, lookback = 20) {
   const last = candles.length - 1
   let level = -Infinity
   for (let i = last - lookback; i < last; i++) level = Math.max(level, candles[i].h)
-  level = r2(level)
   const close = candles[last].c
   const facts = []
-  const active = close > level
+  const active = close > level // compare unrounded; round only for display
   facts.push(active
-    ? `close ${r2(close)} cleared ${lookback}-bar high ${level}`
-    : `close ${r2(close)} below ${lookback}-bar high ${level}`)
+    ? `close ${r2(close)} cleared ${lookback}-bar high ${r2(level)}`
+    : `close ${r2(close)} below ${lookback}-bar high ${r2(level)}`)
   const vols = candles.map((c) => c.v)
   if (vols.every((v) => Number.isFinite(v))) {
     const v20 = sma(vols, 20)
@@ -109,7 +110,7 @@ export function breakout(candles, lookback = 20) {
       facts.push(`volume expansion: ${Math.round(candles[last].v / 1000)}k vs 20-bar avg ${Math.round(v20[last] / 1000)}k`)
     }
   }
-  return { active, level, facts }
+  return { active, level: r2(level), facts }
 }
 
 /**

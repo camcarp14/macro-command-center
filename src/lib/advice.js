@@ -2,12 +2,16 @@
 // Pure composition over precomputed inputs; imports nothing. The priority
 // ladder is law: first match wins, and safety rungs outrank opportunity
 // rungs, so a stop breach can never be talked over by a fresh trigger.
+// New risk (ENTER/ADD) requires EVERY feed alive: quote, BTC, and candles —
+// a dead input never buys anything, and a live trigger that can't act
+// says so instead of pretending it never fired.
 
 export function composeDirective(input = {}) {
   const {
     price = null,
     freshQuote = { state: 'dead' },
     freshBtc = { state: 'dead' },
+    freshCandles = { state: 'dead' },
     regime = { state: 'insufficient_data', facts: [] },
     btcAlign = { aligned: false, state: 'insufficient_data', facts: [] },
     pullback = { stage: 'none', facts: [] },
@@ -25,16 +29,16 @@ export function composeDirective(input = {}) {
   const guardrails = []
   if (freshQuote.state !== 'live') guardrails.push(`MSTR data is ${freshQuote.state} — treat every number below with suspicion`)
   if (freshBtc.state !== 'live') guardrails.push(`BTC data is ${freshBtc.state}`)
+  if (freshCandles.state !== 'live') guardrails.push(`price history is ${freshCandles.state} — regime and trigger reads are running on old tape`)
   if (torque?.read?.grade === 'rich') guardrails.push(`torque is RICH: ${torque.read.text} — you're paying up for the leverage`)
   if (marketSession === 'closed') guardrails.push('market closed (approx NYSE hours) — prices are last session\'s')
 
-  const dead = freshQuote.state === 'dead'
   const stopDistPct = position && Number.isFinite(effectiveStop) && Number.isFinite(price) && price > 0
     ? ((price - effectiveStop) / price) * 100
     : null
 
   // 1 — no data
-  if (price == null || dead) {
+  if (price == null || freshQuote.state === 'dead') {
     return out('NO_DATA', 'Stand down — the data is dead, not the market.', [
       'No trustworthy MSTR price right now.',
       position ? 'You have an open position: check your broker directly, do not trust this screen.' : 'No position open; nothing to protect.',
@@ -71,12 +75,16 @@ export function composeDirective(input = {}) {
     ], guardrails, 'act')
   }
 
-  // 5 — pyramid add
-  if (
-    position && pullback.stage === 'trigger' && regime.state === 'uptrend' && btcAlign.aligned &&
-    Number.isFinite(effectiveStop) && Number.isFinite(position.avgEntry) && effectiveStop >= position.avgEntry &&
-    addSizing?.ok
-  ) {
+  // Feeds that must be alive before ANY new risk goes on.
+  const deadFeeds = [
+    freshBtc.state === 'dead' && 'BTC',
+    freshCandles.state === 'dead' && 'price history',
+  ].filter(Boolean)
+
+  // 5 — pyramid add (spec conditions; blocked adds surface in HOLD, not silence)
+  const addSpecMet = position && pullback.stage === 'trigger' && regime.state === 'uptrend' && btcAlign.aligned &&
+    Number.isFinite(effectiveStop) && Number.isFinite(position.avgEntry) && effectiveStop >= position.avgEntry
+  if (addSpecMet && deadFeeds.length === 0 && addSizing?.ok) {
     return out('ADD', `Add ${addSizing.shares} shares — pullback trigger with the stop already at breakeven.`, [
       ...pullback.facts,
       `add risk: $${fmtUsd(addSizing.riskUsd)} (${addSizing.shares} shares); original position now risk-free vs blended entry`,
@@ -86,7 +94,13 @@ export function composeDirective(input = {}) {
 
   // 6 — hold
   if (position) {
+    const addBlocked = addSpecMet
+      ? deadFeeds.length > 0
+        ? `add trigger active but blocked: ${deadFeeds.join(' + ')} feed dead — no new risk on blind data`
+        : `add trigger active but blocked: ${addSizing?.error ?? 'sizing unavailable'}`
+      : null
     return out('HOLD', `Hold ${position.shares} MSTR — let the trail do the work.`, [
+      addBlocked,
       rLine(r),
       stopLine(effectiveStop, stopDistPct),
       regime.state === 'uptrend' ? `regime: uptrend (${regime.score}/100)` : `regime: ${regime.state} (${regime.score}/100) — watch it`,
@@ -94,9 +108,21 @@ export function composeDirective(input = {}) {
     ], guardrails, 'info')
   }
 
-  // 7 — entry
+  // 7 — entry (flat): a live trigger either sizes cleanly or explains itself
   const trigger = pullback.stage === 'trigger' ? 'pullback' : breakout.active ? 'breakout' : null
-  if (regime.state === 'uptrend' && btcAlign.aligned && trigger && sizing?.ok) {
+  if (regime.state === 'uptrend' && btcAlign.aligned && trigger) {
+    if (deadFeeds.length > 0) {
+      return out('STAND_ASIDE', `A ${trigger} trigger is live but ${deadFeeds.join(' and ')} ${deadFeeds.length > 1 ? 'feeds are' : 'feed is'} dead — no new risk on blind data.`, [
+        ...(trigger === 'pullback' ? pullback.facts : breakout.facts),
+        'Fix the feed (Settings → Data sources), then re-read the trigger.',
+      ], guardrails, 'info')
+    }
+    if (!sizing?.ok) {
+      return out('STAND_ASIDE', `A ${trigger} trigger is live but the position can't be sized.`, [
+        ...(trigger === 'pullback' ? pullback.facts : breakout.facts),
+        `blocker: ${sizingErrorText(sizing?.error)}`,
+      ], guardrails, 'info')
+    }
     return out('ENTER', `Buy ${sizing.shares} MSTR on the ${trigger} trigger.`, [
       ...(trigger === 'pullback' ? pullback.facts : breakout.facts),
       `size: ${sizing.shares} shares ≈ $${fmtUsd(sizing.positionUsd)} (${sizing.positionPct}% of equity)${sizing.capped ? ' — CAPPED by max position size' : ''}`,
@@ -113,7 +139,7 @@ export function composeDirective(input = {}) {
     ], guardrails, 'info')
   }
 
-  // 9 — default
+  // 9 — default (genuinely no trigger, or no long edge)
   const why = regime.state === 'uptrend'
     ? 'Uptrend, but no trigger yet — wait for a pullback reclaim or a breakout.'
     : `Regime is ${regime.state} — no long edge. Cash is a position.`
@@ -133,6 +159,13 @@ function rLine(r) {
 function stopLine(stop, distPct) {
   if (!Number.isFinite(stop)) return 'no effective stop computed — fix this before anything else'
   return `stop ${Math.round(stop * 100) / 100}${Number.isFinite(distPct) ? ` (${Math.round(distPct * 10) / 10}% below price)` : ''}`
+}
+function sizingErrorText(code) {
+  return {
+    risk_too_small_for_one_share: 'risk budget too small for one whole share at this stop distance',
+    stop_not_below_entry: 'computed stop is not below the entry price',
+    bad_input: 'sizing inputs incomplete',
+  }[code] ?? (code || 'risk settings unavailable')
 }
 function fmtUsd(x) {
   return Number.isFinite(x) ? Math.round(x).toLocaleString('en-US') : '—'

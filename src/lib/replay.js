@@ -35,7 +35,10 @@ export function replayRules(candles, opts = {}) {
       const pb = pullbackSetup(seen)
       const bo = breakout(seen, lookback)
       const kind = pb.stage === 'trigger' ? 'pullback' : bo.active ? 'breakout' : null
-      if (kind) {
+      // Never open a trade whose hard-exit condition (close < EMA50) is
+      // already true at the signal close — that's a doomed 1-bar round trip,
+      // and the advice ladder would never issue it either.
+      if (kind && !isBelowEma50(seen)) {
         const entryPx = round2(candles[i + 1].o * (1 + feePct / 100))
         const atrArr = atr(seen, 14)
         const a = atrArr[atrArr.length - 1]
@@ -75,6 +78,9 @@ export function replayRules(candles, opts = {}) {
     const exitPx = round2(candles[lastIdx].c * (1 - feePct / 100))
     trades.push({ ...makeTrade(pos, candles, lastIdx, exitPx), openAtEnd: true })
     warnings.push('final trade still open at end of data — closed at last close for accounting')
+  }
+  if (trades.length === 0) {
+    warnings.push(`no trades generated over ${candles.length} bars — the ruleset never triggered on this tape`)
   }
 
   return { trades, summary: summarize(trades), warnings }

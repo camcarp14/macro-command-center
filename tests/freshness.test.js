@@ -36,17 +36,20 @@ describe('ageLabel', () => {
   })
 })
 
-describe('nyseSessionState (approx, UTC)', () => {
-  it('weekday mid-session open', () => {
-    expect(nyseSessionState(Date.UTC(2025, 0, 8, 14, 0))).toBe('open') // Wed
+describe('nyseSessionState (approx, DST-aware via America/New_York)', () => {
+  it('EDT (July): 13:30–20:00 UTC session boundaries', () => {
+    expect(nyseSessionState(Date.UTC(2026, 6, 22, 13, 29))).toBe('closed') // Wed 9:29 ET
+    expect(nyseSessionState(Date.UTC(2026, 6, 22, 13, 30))).toBe('open')   // 9:30 ET
+    expect(nyseSessionState(Date.UTC(2026, 6, 22, 19, 59))).toBe('open')   // 15:59 ET
+    expect(nyseSessionState(Date.UTC(2026, 6, 22, 20, 0))).toBe('closed')  // 16:00 ET
+  })
+  it('EST (January): the session shifts to 14:30–21:00 UTC — the last trading hour is OPEN', () => {
+    expect(nyseSessionState(Date.UTC(2025, 0, 6, 13, 30))).toBe('closed') // Mon 8:30 ET premarket
+    expect(nyseSessionState(Date.UTC(2025, 0, 6, 14, 30))).toBe('open')   // 9:30 ET
+    expect(nyseSessionState(Date.UTC(2025, 0, 6, 20, 30))).toBe('open')   // 15:30 ET — the hour the old UTC-hardcode mislabeled
+    expect(nyseSessionState(Date.UTC(2025, 0, 6, 21, 0))).toBe('closed')  // 16:00 ET
   })
   it('weekend closed', () => {
     expect(nyseSessionState(Date.UTC(2025, 0, 11, 15, 0))).toBe('closed') // Sat
-  })
-  it('boundaries: 13:29 closed, 13:30 open, 19:59 open, 20:00 closed', () => {
-    expect(nyseSessionState(Date.UTC(2025, 0, 6, 13, 29))).toBe('closed')
-    expect(nyseSessionState(Date.UTC(2025, 0, 6, 13, 30))).toBe('open')
-    expect(nyseSessionState(Date.UTC(2025, 0, 10, 19, 59))).toBe('open')
-    expect(nyseSessionState(Date.UTC(2025, 0, 10, 20, 0))).toBe('closed')
   })
 })

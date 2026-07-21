@@ -28,6 +28,11 @@ describe('sizePosition', () => {
     expect(s.ok).toBe(false)
     expect(s.error).toBe('risk_too_small_for_one_share')
   })
+  it('NaN/null maxPositionPct cannot silently disable the cap', () => {
+    expect(sizePosition({ equity: 100000, riskPct: 1, entry: 100, stop: 99.9, maxPositionPct: NaN }).error).toBe('bad_input')
+    expect(sizePosition({ equity: 100000, riskPct: 1, entry: 100, stop: 99.9, maxPositionPct: null }).error).toBe('bad_input')
+    expect(sizePosition({ equity: 100000, riskPct: 1, entry: 100, stop: 99.9, maxPositionPct: 0 }).error).toBe('bad_input')
+  })
 })
 
 describe('initialStop', () => {
@@ -89,6 +94,10 @@ describe('effectiveStop', () => {
   })
   it('trail wins when highest', () => {
     expect(effectiveStop({ initialStop: 90, trailStop: 105, entry: 100, beAtR: 1, highestCloseSinceEntry: 120 })).toBe(105)
+  })
+  it('breakeven arms at EXACTLY +1R in decimal cents (no float-ULP miss)', () => {
+    // raw float threshold computes 102.70000000000002; 102.70 must still arm
+    expect(effectiveStop({ initialStop: 97.32, trailStop: null, entry: 100.01, beAtR: 1, highestCloseSinceEntry: 102.70 })).toBe(100.01)
   })
   it('all-null → null', () => {
     expect(effectiveStop({ initialStop: null, trailStop: null, entry: null, highestCloseSinceEntry: null })).toBeNull()

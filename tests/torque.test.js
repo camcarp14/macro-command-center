@@ -61,6 +61,11 @@ describe('rollingBeta', () => {
   it('too little data → null latest, empty series', () => {
     expect(rollingBeta([1, 2, 3], [1, 2, 3], 30)).toEqual({ latest: null, series: [] })
   })
+  it('REFUSES unequal-length inputs — head-pairing different days would fake a beta', () => {
+    const btc = Array.from({ length: 121 }, (_, i) => 100 * Math.exp(0.01 * ((i % 3) - 1) * i))
+    const mstr = btc.slice(60) // covers only the recent stretch
+    expect(rollingBeta(mstr, btc, 30)).toEqual({ latest: null, series: [], warning: 'unaligned_series' })
+  })
 })
 
 describe('relativeStrength', () => {
@@ -99,6 +104,10 @@ describe('torqueRead', () => {
     expect(torqueRead({ beta: 2, mNav: 2 }).grade).toBe('fair')
     expect(torqueRead({ beta: 1.8, mNav: 2 }).grade).toBe('fair')
     expect(torqueRead({ beta: 1.78, mNav: 2 }).grade).toBe('rich')
+  })
+  it('grades on the UNROUNDED ratio — 1.104 is efficient, 0.896 is rich', () => {
+    expect(torqueRead({ beta: 1.104, mNav: 1 }).grade).toBe('efficient')
+    expect(torqueRead({ beta: 0.896, mNav: 1 }).grade).toBe('rich')
   })
   it('nulls → unknown', () => {
     expect(torqueRead({ beta: null, mNav: 2 }).grade).toBe('unknown')

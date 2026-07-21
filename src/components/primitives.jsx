@@ -2,12 +2,16 @@
 // No router in this app: CommandK takes action items with run() callbacks.
 import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from 'react'
 
-/* ---- numbers count to their value (ease-out cubic); tabular-nums in CSS ---- */
+/* ---- numbers count to their value (ease-out cubic); tabular-nums in CSS ----
+   Gated on prefers-reduced-motion like every CSS animation in the system. */
 export function useTween(target, dur = 700) {
   const [v, setV] = useState(target ?? 0)
   const fromRef = useRef(target ?? 0)
   useEffect(() => {
     if (target == null) return
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      fromRef.current = target; setV(target); return
+    }
     const from = fromRef.current ?? 0
     if (from === target) { setV(target); return }
     let raf; const t0 = performance.now()
@@ -41,9 +45,11 @@ export function SkPage({ cards = 4 }) {
   )
 }
 
-/* ---- height:auto expansion, zero measuring, zero jank ---- */
+/* ---- height:auto expansion, zero measuring, zero jank ----
+   Children stay mounted while closing so the collapse actually animates
+   (unmounting them empties the box mid-transition and it snaps shut). */
 export function Expand({ open, children }) {
-  return <div className={`expand${open ? ' open' : ''}`} aria-hidden={!open}><div>{open ? children : null}</div></div>
+  return <div className={`expand${open ? ' open' : ''}`} aria-hidden={!open} inert={open ? undefined : ''}><div>{children}</div></div>
 }
 
 /* ---- toasts ---- */
@@ -84,10 +90,10 @@ export function Seg({ value, onChange, options }) {
 }
 
 /* ---- freshness chip: live / stale / dead — the honesty badge ---- */
-export function FreshChip({ fresh, label }) {
+export function FreshChip({ fresh, label, title }) {
   if (!fresh) return null
   return (
-    <span className={`chip ${fresh.state}`} title={`${label || ''} ${fresh.label}`.trim()}>
+    <span className={`chip ${fresh.state}`} title={title || `${label || ''} ${fresh.label}`.trim()}>
       <span className="dot" />{label ? `${label} · ` : ''}{fresh.state === 'dead' ? 'no data' : fresh.label}
     </span>
   )
@@ -112,7 +118,12 @@ export function CommandK({ items = [] }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
   useEffect(() => { if (open) setTimeout(() => inputRef.current?.focus(), 10) }, [open])
-  useEffect(() => { document.body.style.overflow = open ? 'hidden' : ''; return () => { document.body.style.overflow = '' } }, [open])
+  // lock the ROOT element: with `html { overflow-x: clip }` the body's
+  // overflow no longer propagates to the viewport, so a body lock is a no-op
+  useEffect(() => {
+    document.documentElement.style.overflow = open ? 'hidden' : ''
+    return () => { document.documentElement.style.overflow = '' }
+  }, [open])
   useEffect(() => { setI(0) }, [q])
   if (!open) return null
   const go = (item) => { setOpen(false); item.run() }

@@ -6,6 +6,7 @@ const bullish = () => ({
   price: 412.35,
   freshQuote: { state: 'live' },
   freshBtc: { state: 'live' },
+  freshCandles: { state: 'live' },
   regime: { state: 'uptrend', score: 100, facts: ['close above EMA20 400'] },
   btcAlign: { aligned: true, state: 'uptrend', score: 80, facts: [] },
   pullback: { stage: 'trigger', facts: ['trigger: close 412.35 reclaimed prior high 408.8'], refHigh: 408.8 },
@@ -122,6 +123,40 @@ describe('honesty constraints', () => {
     const d = composeDirective({ ...bullish(), freshQuote: { state: 'stale' } })
     expect(d.action).toBe('ENTER')
     expect(d.guardrails.join(' ')).toContain('stale')
+  })
+  it('dead BTC feed blocks ENTER even with a perfect trigger — and says why', () => {
+    const d = composeDirective({ ...bullish(), freshBtc: { state: 'dead' } })
+    expect(d.action).toBe('STAND_ASIDE')
+    expect(d.headline).toContain('dead')
+    expect(d.headline).toContain('trigger')
+  })
+  it('dead candle history blocks ENTER — regime reads on old tape buy nothing', () => {
+    const d = composeDirective({ ...bullish(), freshCandles: { state: 'dead' } })
+    expect(d.action).toBe('STAND_ASIDE')
+    expect(d.headline).toContain('dead')
+  })
+  it('dead BTC feed blocks ADD — HOLD carries the blocked-add reason', () => {
+    const d = composeDirective(withPosition({
+      pullback: { stage: 'trigger', facts: ['trigger'] },
+      freshBtc: { state: 'dead' },
+    }))
+    expect(d.action).toBe('HOLD')
+    expect(d.reasons.join(' ')).toContain('blocked')
+  })
+  it('live trigger with failed sizing tells the truth about the blocker', () => {
+    const d = composeDirective({ ...bullish(), sizing: { ok: false, error: 'risk_too_small_for_one_share' } })
+    expect(d.action).toBe('STAND_ASIDE')
+    expect(d.headline).toContain("can't be sized")
+    expect(d.reasons.join(' ')).toContain('one whole share')
+    expect(d.headline).not.toContain('no trigger')
+  })
+  it('blocked ADD (sizing) surfaces in HOLD instead of silence', () => {
+    const d = composeDirective(withPosition({
+      pullback: { stage: 'trigger', facts: ['trigger'] },
+      addSizing: { ok: false, error: 'risk_too_small_for_one_share' },
+    }))
+    expect(d.action).toBe('HOLD')
+    expect(d.reasons.join(' ')).toContain('add trigger active but blocked')
   })
   it('rich torque appends a guardrail on any action', () => {
     const d = composeDirective({ ...bullish(), torque: { read: { grade: 'rich', text: 'paying up' } } })

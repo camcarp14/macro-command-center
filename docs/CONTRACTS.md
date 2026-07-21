@@ -37,7 +37,8 @@ unit-tested in `tests/` using the deterministic generators in `tests/fixtures.js
 - `sizePosition({ equity, riskPct, entry, stop, maxPositionPct = 30 })` →
   `{ ok, shares, riskUsd, perShareRisk, positionUsd, positionPct, capped, error }`
   - `perShareRisk = entry - stop`; must be > 0 else `{ok:false, error:'stop_not_below_entry', shares:0}`.
-  - `equity <= 0 || riskPct <= 0 || entry <= 0` → `{ok:false, error:'bad_input', shares:0}`.
+  - `equity <= 0 || riskPct <= 0 || entry <= 0` or non-finite/≤0 `maxPositionPct`
+    → `{ok:false, error:'bad_input', shares:0}` (a NaN cap must not silently uncap).
   - `shares = floor((equity * riskPct/100) / perShareRisk)`; whole shares only.
   - If `shares*entry > equity*maxPositionPct/100`: cap `shares = floor(equity*maxPositionPct/100/entry)`,
     set `capped:true`, and `riskUsd` becomes the EFFECTIVE `shares*perShareRisk`.
@@ -55,7 +56,8 @@ unit-tested in `tests/` using the deterministic generators in `tests/fixtures.js
   MONOTONICALLY NON-DECREASING — this is the point. While ATR unseeded, carry `initialStop`.
 - `effectiveStop({ initialStop, trailStop, entry, beAtR = 1, highestCloseSinceEntry })` →
   number|null: `max(initialStop, trailStop ?? -Inf, breakeven)` where breakeven = `entry`
-  once `highestCloseSinceEntry >= entry + beAtR*(entry - initialStop)`, else `-Inf` term dropped.
+  once `highestCloseSinceEntry >= entry + beAtR*(entry - initialStop)` — compared at
+  CENT precision (round2 both sides) so a float ULP can't miss the exact +1R boundary.
 - `rMultiple({ entry, initialStop, price })` → number|null. `(price-entry)/(entry-initialStop)`;
   null if `entry-initialStop <= 0` or any input null.
 - `blendLots(lots)` → `{ shares, avgEntry }` from `[{shares, entry}]`; empty → `{shares:0, avgEntry:null}`.
@@ -71,11 +73,13 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
   last two confirmed swing lows ascending. score ≥ 70 → uptrend, ≤ 30 → downtrend, else chop.
 - `pullbackSetup(candles)` → `{ stage: 'none'|'setup'|'trigger', facts, refHigh }`
   Requires regime uptrend, else stage 'none' with fact.
-  setup: within last 3 bars a bar's LOW came within 1.5% of EMA20 (or below it) while
-  that bar's CLOSE stayed above EMA50. trigger: setup held AND latest close > previous
-  bar's high. `refHigh` = that previous bar's high.
+  setup: within the 3 bars BEFORE the current bar (never the current bar itself —
+  a one-bar flush-and-rip is news, not a pullback) a bar's LOW came within 1.5% of
+  EMA20 (or below it) while that bar's CLOSE stayed above EMA50. trigger: setup held
+  AND latest close > previous bar's high. `refHigh` = that previous bar's high.
 - `breakout(candles, lookback = 20)` → `{ active, level, facts }`
   Latest close > max high of the PRIOR `lookback` bars (excluding latest bar).
+  Comparison is against the UNROUNDED level; `level` is rounded for display only.
   Add fact when `v > 1.3 * sma(v,20)` ("volume expansion"); volume nulls → skip that fact.
 - `exitFlags({ candles, position, effectiveStop })` → array of
   `{ id, severity: 'hard'|'soft', fact }`, possibly empty. position = `{avgEntry, initialStop}`.
@@ -93,13 +97,16 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
 - `dailyLogReturns(closes)` → array length-1 shorter.
 - `rollingBeta(mstrCloses, btcCloses, window = 30)` → `{ latest, series }` —
   beta = cov/var over trailing window of log returns; `< window+1` aligned points → `{latest:null, series:[]}`.
-  `var === 0` → null entry.
+  `var === 0` → null entry. UNEQUAL input lengths are REFUSED
+  (`{latest:null, series:[], warning:'unaligned_series'}`) — head-pairing different
+  days would fabricate a plausible-looking beta. Callers align via `alignByDay`.
 - `relativeStrength(mstrCloses, btcCloses, n = 20)` → `{ mstrRocPct, btcRocPct, spreadPct }` (nulls if short).
 - `mNav({ price, sharesOutstanding, btcHoldings, btcPrice })` →
   `{ marketCap, btcNavUsd, mNav, premiumPct, btcPerShare, impliedBtcPrice }` — any input
   missing/≤0 → all nulls. `impliedBtcPrice = marketCap / btcHoldings`.
 - `torqueRead({ beta, mNav })` → `{ grade: 'efficient'|'fair'|'rich'|'unknown', ratio, text }`
-  ratio = beta/mNav: > 1.1 efficient; 0.9–1.1 fair; < 0.9 rich; null inputs → unknown.
+  Grades on the UNROUNDED quotient beta/mNav (> 1.1 efficient; 0.9–1.1 fair; < 0.9 rich;
+  null inputs → unknown); `ratio` is rounded for display only.
   `text` explains with numbers ("1% BTC move ≈ 1.9% MSTR; you pay 1.62× NAV").
 
 ## src/lib/freshness.js  (imports: nothing)
@@ -108,14 +115,15 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
 - `freshness(fetchedAtMs, key, nowMs)` → `{ state: 'live'|'stale'|'dead', ageSec, label }`
   live < maxAge; stale < 3×maxAge; dead beyond (or `fetchedAtMs == null` → dead, label '—').
   label: "12s ago" / "3m ago" / "2h ago" / "3d ago".
-- `nyseSessionState(nowMs)` → `'open'|'closed'` — Mon–Fri 13:30–20:00 UTC approximation;
-  NO holiday calendar (document in JSDoc; UI labels it "approx").
+- `nyseSessionState(nowMs)` → `'open'|'closed'` — Mon–Fri 09:30–16:00 America/New_York
+  via Intl (DST-correct year-round); NO holiday calendar (UI labels it "approx" and
+  prefers the quote feed's own `marketState` when the quote is live).
 
 ## src/lib/advice.js  (imports: nothing — takes precomputed inputs)
 
 - `composeDirective(input)` — input:
   ```
-  { price, freshQuote:{state}, freshBtc:{state},
+  { price, freshQuote:{state}, freshBtc:{state}, freshCandles:{state},
     regime, btcAlign, pullback, breakout, exitFlags,
     position: { shares, avgEntry, initialStop } | null,
     effectiveStop, r, sizing, addSizing, torque: { read } | null,
@@ -128,16 +136,23 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
   3. position && any other hard flag → `EXIT` (urgent)
   4. position && any soft flag → `TRIM` (act)
   5. position && pullback.stage==='trigger' && regime uptrend && btcAlign.aligned
-     && effectiveStop >= avgEntry → `ADD` (act; uses `addSizing`)
+     && effectiveStop >= avgEntry && freshBtc/freshCandles NOT dead && addSizing.ok
+     → `ADD` (act; uses `addSizing`). When the spec conditions hold but freshness or
+     addSizing blocks, fall to HOLD with an explicit "add trigger active but blocked: …" reason.
   6. position → `HOLD` (info; reasons include R, stop distance %, trail level)
-  7. !position && regime uptrend && btcAlign.aligned && (pullback trigger || breakout active)
-     → `ENTER` (act; uses `sizing`)
+  7. !position && regime uptrend && btcAlign.aligned && (pullback trigger || breakout active):
+     - freshBtc or freshCandles dead → `STAND_ASIDE` naming the dead feed(s) — never
+       pretend the trigger doesn't exist
+     - sizing missing/not ok → `STAND_ASIDE` naming the sizing blocker
+     - else → `ENTER` (act; uses `sizing`)
   8. !position && regime uptrend && !btcAlign.aligned → `STAND_ASIDE`
      ("MSTR trend up but BTC not confirming — this is a BTC-beta trade")
   9. else → `STAND_ASIDE`
   Guardrails appended regardless of action: stale-data warning when any fresh state
   ≠ 'live'; torque grade 'rich' warning; `marketSession === 'closed'` note.
-  Reasons cite actual numbers. NEVER emit ENTER/ADD when either freshness is 'dead'.
+  Reasons cite actual numbers. NEVER emit ENTER/ADD when freshQuote, freshBtc, or
+  freshCandles is 'dead'. Rung 9's "no trigger yet" copy is reserved for genuinely
+  trigger-less states.
 
 ## src/lib/replay.js  (imports: ta.js, risk.js, signals.js)
 
@@ -146,8 +161,10 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
   → `{ trades: [...], summary, warnings }`
   Mechanics — NO LOOKAHEAD, signals at close `i` use data `≤ i`, fills at `i+1` OPEN:
   - Warmup: start scanning at i = 59.
-  - Flat: if `pullbackSetup` trigger OR `breakout` active at close i → enter next open,
-    fee-adjusted (`fill = open*(1+feePct/100)`), initial stop = ATR mode at signal bar.
+  - Flat: if (`pullbackSetup` trigger OR `breakout` active) at close i AND close i is
+    NOT below EMA50 (never open a trade whose hard-exit condition is already true —
+    matches the advice ladder's regime gating) → enter next open, fee-adjusted
+    (`fill = open*(1+feePct/100)`), initial stop = ATR mode at signal bar.
   - In position: `anchoredChandelier` + `effectiveStop` (incl. breakeven rule).
     Exit signal when close ≤ effectiveStop or `regime_break` → exit at next open
     (`fill = open*(1-feePct/100)`).
@@ -155,13 +172,17 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
   - Trade: `{ entryDate, exitDate, entryPx, exitPx, shares, initialStop, r, bars, kind: 'pullback'|'breakout', openAtEnd? }`
     (dates as `YYYY-MM-DD` UTC of `t`).
   - summary: `{ trades, wins, losses, winRatePct, avgR, cumR, maxDrawdownR, avgBars }`
-    (maxDrawdownR = worst peak-to-trough of the running cumR series). Zero trades → zeros/nulls, warning.
+    (maxDrawdownR = worst peak-to-trough of the running cumR series). Zero trades →
+    zeros/nulls AND a 'no trades generated' warning is always appended.
 
 ---
 
 ## Server: netlify/functions/*  (Netlify Functions v2: `export default async (req, context)`)
 
-Shared plumbing in `netlify/shared/util.mjs` (already written — read it):
+Shared plumbing in `netlify/shared/util.mjs` (already written — read it).
+Blobs are opened with STRONG consistency (read-modify-write endpoints lose
+sequential writes under the default eventual reads), and `checkAuth` compares
+the token constant-time over SHA-256 digests:
 `sourceHandler(name, fn)` wraps auth + timing + status recording + error → 502.
 `checkAuth`, `json`, `fetchWithTimeout`, `store`, `sendTelegram`.
 ALL endpoints require `x-dashboard-token` when `DASHBOARD_TOKEN` env is set —
@@ -182,7 +203,10 @@ separately for fixture tests (`parseYahooChart`, `parseStooqDaily`, `parseBinanc
   Binance `api/v3/ticker/24hr?symbol=BTCUSDT` → Coinbase `api.coinbase.com/v2/prices/BTC-USD/spot`
   (no 24h change → null) → CoinGecko simple/price w/ 24h change.
 - `btcCandles(tf)` → `'1d'` (Binance klines limit 730) | `'30m'` (limit 500)
-  → Coinbase `api.exchange.coinbase.com/products/BTC-USD/candles` → CoinGecko OHLC (v:null).
+  → Coinbase `api.exchange.coinbase.com/products/BTC-USD/candles`; CoinGecko OHLC
+  (v:null, days=1) is a 30m-ONLY fallback — its daily-range auto-granularity serves
+  4-DAY candles, which must never be labeled '1d'. Every fetch attempt gets a ~3s
+  budget so the whole chain fits inside Netlify's 10s function limit.
 
 ### Functions (each file wraps with sourceHandler where noted)
 - `quote.mjs` — sourceHandler('quote') → `mstrQuote()`.
@@ -199,21 +223,32 @@ separately for fixture tests (`parseYahooChart`, `parseStooqDaily`, `parseBinanc
   PUT validates via `netlify/shared/validate.mjs` (below); a PUT that includes
   btcHoldings/sharesOutstanding sets the matching `*Seeded:false` and stamps `*AsOf` (today, UTC).
 - `position.mjs` — GET → `{ position: {...}|null }`; PUT validates
-  `{ shares:int>0, avgEntry>0, entryDate:'YYYY-MM-DD', initialStop: 0<x<avgEntry, stopOverride?: number|null, note?: string≤500 }`
+  `{ shares:int>0, avgEntry>0, entryDate:'YYYY-MM-DD', initialStop: 0<x<avgEntry, stopOverride?: ≥initialStop|null, note?: string≤500 }`
   (+ server stamps `updatedAt`); DELETE clears. Blobs key `position`.
+  The server maintains `stopHighWater`: on every PUT it ratchets to
+  `max(previous, initialStop, stopOverride)`; watch-snapshot ratchets it to the
+  computed effective stop each run; it survives edits, joins the client's
+  effective-stop max (this is what makes "the stop only ever rises" an
+  END-TO-END guarantee across blends and settings changes), and resets only
+  when the position is DELETEd.
 - `journal.mjs` — GET → `{ trades: [] }` (newest first); POST validates trade
   `{ entryDate, exitDate ≥ entryDate, entry>0, exit>0, shares:int>0, initialStop>0, kind?: 'pullback'|'breakout'|'manual', note?≤500 }`,
   assigns `id` (crypto.randomUUID), prepends; DELETE `?id=`. Blobs key `journal`.
 - `status.mjs` — auth'd; returns blobs `source_status` map + `{ blobs: {ok} }` +
   live-pings Yahoo/Binance/Coinbase/Stooq/CoinGecko (2s timeout each, in parallel)
   → per-upstream `{ ok, latencyMs | error }`. This is the first-deploy diagnostic.
-- `watch-snapshot.mjs` — SCHEDULED (config in netlify.toml, every 30 min). No auth.
-  Fetch quote+btc via sources; load settings+position+daily candles; if position open:
-  compute effectiveStop (chandelier anchored at entryDate's candle index) and alert
-  via Telegram: `STOP HIT` (price ≤ stop), `STOP NEAR` (within 3%), or — when flat —
-  `ENTRY SIGNAL` (pullback trigger || breakout). Dedupe: Blobs key `alerts_sent`
-  `{ [alertKey]: sentAtMs }`, suppress repeats within 6h. Also append
-  `{t, mstr, btc}` to Blobs `spark_history` (cap 400 entries). Never throws — log + exit.
+- `watch-snapshot.mjs` — SCHEDULED (config in netlify.toml, every 30 min).
+  Scheduler invocations (body carries `next_run`) run unauthenticated; MANUAL calls
+  must pass `x-dashboard-token`, otherwise 401 — and unauthenticated/unauthed
+  responses never include price/stop proximity fields. Fetch quote+btc via sources;
+  load settings+position+daily candles; if position open: compute the effective stop
+  (chandelier anchored at entryDate; initialStop/stopOverride/stopHighWater floor it
+  even when candles fail — an override can never LOWER the stop), ratchet
+  `stopHighWater`, and alert via Telegram: `STOP HIT` (price ≤ stop), `STOP NEAR`
+  (within 3%), or — when flat — `ENTRY SIGNAL`. Dedupe: Blobs `alerts_sent`
+  `{ [conditionId]: {sentAt, stopAtSend} }` — keyed by CONDITION (stop_hit/stop_near/
+  entry_*), resent only after 6h OR a ≥0.5% material stop move; entries pruned after
+  7 days. Never throws — log + exit.
 
 ### netlify/shared/validate.mjs — pure validators (unit-testable)
 - `validateSettings(patch)` → `{ ok, value?, errors? }` — numbers finite & > 0;

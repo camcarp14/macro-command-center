@@ -9,8 +9,8 @@
  */
 export function sizePosition({ equity, riskPct, entry, stop, maxPositionPct = 30 }) {
   const bad = (error) => ({ ok: false, error, shares: 0, riskUsd: null, perShareRisk: null, positionUsd: null, positionPct: null, capped: false })
-  if (![equity, riskPct, entry, stop].every(Number.isFinite)) return bad('bad_input')
-  if (equity <= 0 || riskPct <= 0 || entry <= 0) return bad('bad_input')
+  if (![equity, riskPct, entry, stop, maxPositionPct].every(Number.isFinite)) return bad('bad_input')
+  if (equity <= 0 || riskPct <= 0 || entry <= 0 || maxPositionPct <= 0) return bad('bad_input')
   const perShareRisk = entry - stop
   if (perShareRisk <= 0) return bad('stop_not_below_entry')
   let shares = Math.floor((equity * riskPct / 100) / perShareRisk)
@@ -98,7 +98,10 @@ export function effectiveStop({ initialStop, trailStop, entry, beAtR = 1, highes
   if (Number.isFinite(trailStop)) candidates.push(trailStop)
   if (
     Number.isFinite(entry) && Number.isFinite(initialStop) && Number.isFinite(highestCloseSinceEntry) &&
-    entry - initialStop > 0 && highestCloseSinceEntry >= entry + beAtR * (entry - initialStop)
+    entry - initialStop > 0 &&
+    // compare in cents: at cent-quantized prices the raw float threshold can
+    // land one ULP above the decimal value and miss the >= boundary at +1R
+    round2(highestCloseSinceEntry) >= round2(entry + beAtR * (entry - initialStop))
   ) {
     candidates.push(entry)
   }

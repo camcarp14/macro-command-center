@@ -12,6 +12,11 @@ describe('validateSettings', () => {
     expect(v.ok).toBe(false)
     expect(v.errors[0]).toContain('riskPtc')
   })
+  it('Object.prototype key names are unknown keys, not prototype-chain rules', () => {
+    expect(validateSettings({ hasOwnProperty: 1 }).ok).toBe(false)
+    expect(validateSettings({ constructor: 5 }).ok).toBe(false)
+    expect(validateSettings({ toString: 123 }).ok).toBe(false)
+  })
   it('enforces bounds: riskPct ≤ 5, equity > 0, atrMult range', () => {
     expect(validateSettings({ riskPct: 6 }).ok).toBe(false)
     expect(validateSettings({ equity: 0 }).ok).toBe(false)
@@ -39,6 +44,10 @@ describe('validatePosition', () => {
   it('stop must sit below entry', () => {
     expect(validatePosition({ ...good, initialStop: 412.5 }).ok).toBe(false)
     expect(validatePosition({ ...good, initialStop: 500 }).ok).toBe(false)
+  })
+  it('stopOverride can only RAISE the stop — below initialStop is rejected', () => {
+    expect(validatePosition({ ...good, stopOverride: 300 }).ok).toBe(false)
+    expect(validatePosition({ ...good, stopOverride: 390 }).ok).toBe(true)
   })
   it('shares integer, date shape, note cap', () => {
     expect(validatePosition({ ...good, shares: 10.5 }).ok).toBe(false)

@@ -6,7 +6,7 @@ import { createChart, LineStyle } from 'lightweight-charts'
 import { ema } from '../lib/ta.js'
 import { replayRules } from '../lib/replay.js'
 import { Seg, FreshChip } from './primitives.jsx'
-import { fmtPx, round2 } from '../App.jsx'
+import { fmtPx, round2 } from '../lib/format.js'
 
 const C = {
   up: '#0FA3A3', down: '#D93A5F', mstr: '#3B72E8', ink3: '#6B7487',
@@ -50,7 +50,7 @@ export default function ChartPanel({ derived, settings, position }) {
             <button className={`btn sm${showReplay ? ' primary' : ''}`} onClick={() => setShowReplay((s) => !s)} data-testid="replay-toggle">
               {showReplay ? 'Replay ON' : 'Run rule replay'}
             </button>
-            <span className="tiny">runs the exact entry/stop/trail rules over this history — fills at next open, 0.1% fees, no lookahead</span>
+            <span className="tiny">replays the ATR-stop variant of the entry/trail rules over this history — fills at next open, 0.1% fees, no lookahead</span>
           </div>
         )}
       </section>
@@ -106,7 +106,14 @@ function Chart({ candles, position, posDerived, trades }) {
       handleScroll: { pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
     })
     chartRef.current = chart
-    const ro = new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth }))
+    // Panels stay mounted while hidden (width 0); on reveal, resize AND
+    // refit — data may have been set while the box had no width.
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth > 0) {
+        chart.applyOptions({ width: el.clientWidth })
+        chart.timeScale().fitContent()
+      }
+    })
     ro.observe(el)
     return () => { ro.disconnect(); chart.remove(); chartRef.current = null }
   }, [])

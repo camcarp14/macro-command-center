@@ -1,5 +1,14 @@
 // TORQUE — the shell. Owns: auth gate, source polling, the one derived-state
 // computation that feeds every view, tab navigation, ⌘K, toasts.
+//
+// Honesty rules enforced here (the reviewers' bar):
+//  - freshness is computed from the LAST SUCCESSFUL fetch and ages through
+//    live → stale → dead; a single failed poll never forges "dead"
+//  - once a feed IS dead, its price is nulled — the tape shows "—", never a
+//    remembered number beside a dead chip
+//  - delayed/EOD quote kinds are labeled on the tape, not hidden
+//  - the persisted stop high-water mark joins the effective-stop max, so the
+//    governing stop can never render below any level it has already reached
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { regime, pullbackSetup, breakout, exitFlags, btcAlignment } from './lib/signals.js'
 import { atr, swings } from './lib/ta.js'
@@ -7,28 +16,17 @@ import { sizePosition, initialStop, anchoredChandelier, effectiveStop, rMultiple
 import { alignByDay, rollingBeta, relativeStrength, mNav, torqueRead } from './lib/torque.js'
 import { freshness, nyseSessionState } from './lib/freshness.js'
 import { composeDirective } from './lib/advice.js'
-import { ToastProvider, CommandK, FreshChip } from './components/primitives.jsx'
+import { api } from './lib/api.js'
+import { fmtPx, round2 } from './lib/format.js'
+import { ToastProvider, CommandK, FreshChip, Num } from './components/primitives.jsx'
 import Cockpit from './components/Cockpit.jsx'
 import ChartPanel from './components/ChartPanel.jsx'
 import Journal from './components/Journal.jsx'
 import Settings from './components/Settings.jsx'
 
-/* ---------------- API plumbing ---------------- */
-export function getToken() { return sessionStorage.getItem('torque_token') || '' }
-
-export async function api(path, opts = {}) {
-  const headers = { ...(opts.headers || {}) }
-  const tok = getToken()
-  if (tok) headers['x-dashboard-token'] = tok
-  if (opts.body) headers['content-type'] = 'application/json'
-  const res = await fetch(`/api/${path}`, { ...opts, headers })
-  const body = await res.json().catch(() => ({}))
-  if (res.status === 401) { const e = new Error('unauthorized'); e.code = 401; throw e }
-  if (!res.ok) { const e = new Error(body.error || `HTTP ${res.status}`); e.body = body; throw e }
-  return body
-}
-
-/** Poll a source; expose {data, error, fetchedAt, loading} + reload(). */
+/** Poll a source; expose {data, error, fetchedAt, loading} + reload().
+ *  On error the last-good data and fetchedAt are KEPT — the freshness
+ *  ladder (not the error) decides when data stops being trustworthy. */
 function useSource(path, intervalMs, onAuthFail) {
   const [state, setState] = useState({ data: null, error: null, fetchedAt: null, loading: true })
   const load = useCallback(async () => {
@@ -59,6 +57,21 @@ const TABS = [
   { id: 'settings', label: 'Settings', icon: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33h0a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51h0a1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82v0a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z' },
 ]
 
+/** Tab panels stay mounted (drafts survive reference-checking other tabs);
+ *  the pagefade animation restarts by class-toggle, not remount. */
+function TabPanel({ active, children }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (active && el) {
+      el.classList.remove('pagefade')
+      void el.offsetWidth // reflow so the animation restarts
+      el.classList.add('pagefade')
+    }
+  }, [active])
+  return <div ref={ref} hidden={!active} className="pagefade">{children}</div>
+}
+
 export default function App() {
   const [needToken, setNeedToken] = useState(false)
   const [tab, setTab] = useState('cockpit')
@@ -82,13 +95,15 @@ export default function App() {
   const position = positionSrc.data?.position ?? null
 
   const derived = useMemo(() => {
-    const price = quote.data?.price ?? null
-    const btcPrice = btc.data?.price ?? null
+    // freshness first: it decides which numbers are allowed to exist at all
+    const freshQuote = freshness(quote.fetchedAt, 'quote', now)
+    const freshBtc = freshness(btc.fetchedAt, 'btc', now)
+    const freshCandles = freshness(mstr1d.fetchedAt, 'candles_1d', now)
+    const freshBtcCandles = freshness(btc1d.fetchedAt, 'candles_1d', now)
+    const price = freshQuote.state === 'dead' ? null : quote.data?.price ?? null
+    const btcPrice = freshBtc.state === 'dead' ? null : btc.data?.price ?? null
     const mc = mstr1d.data?.candles ?? []
     const bc = btc1d.data?.candles ?? []
-    const freshQuote = freshness(quote.error ? null : quote.fetchedAt, 'quote', now)
-    const freshBtc = freshness(btc.error ? null : btc.fetchedAt, 'btc', now)
-    const freshCandles = freshness(mstr1d.error ? null : mstr1d.fetchedAt, 'candles_1d', now)
 
     const reg = regime(mc)
     const align = btcAlignment(bc)
@@ -136,15 +151,18 @@ export default function App() {
         initialStop: position.initialStop, trailStop: trailNow, entry: position.avgEntry,
         beAtR: settings?.beAtR ?? 1, highestCloseSinceEntry: hcse,
       })
+      // manual override and the persisted high-water mark only ever RAISE it
       if (Number.isFinite(position.stopOverride)) eff = Math.max(eff ?? -Infinity, position.stopOverride)
+      if (Number.isFinite(position.stopHighWater)) eff = Math.max(eff ?? -Infinity, position.stopHighWater)
       const r = price != null ? rMultiple({ entry: position.avgEntry, initialStop: position.initialStop, price }) : null
       flags = exitFlags({ candles: mc, position, effectiveStop: eff })
       posDerived = { entryIdx, trailNow, trailSeries, effStop: Number.isFinite(eff) ? eff : null, r, hcse }
     }
 
-    const marketSession = nyseSessionState(now)
+    // prefer the exchange's own session state when the quote is live
+    const marketSession = (freshQuote.state === 'live' && quote.data?.marketState) || nyseSessionState(now)
     const directive = composeDirective({
-      price, freshQuote, freshBtc,
+      price, freshQuote, freshBtc, freshCandles,
       regime: reg, btcAlign: align, pullback: pb, breakout: bo,
       exitFlags: flags,
       position: position ? { shares: position.shares, avgEntry: position.avgEntry, initialStop: position.initialStop } : null,
@@ -156,22 +174,22 @@ export default function App() {
     })
 
     return {
-      price, btcPrice, freshQuote, freshBtc, freshCandles,
+      price, btcPrice, freshQuote, freshBtc, freshCandles, freshBtcCandles,
       regime: reg, btcAlign: align, pullback: pb, breakout: bo,
       beta, rs, nav, torqueRead: tRead,
       atrNow, lastSwingLow, stopPlan, sizing, addSizing,
       posDerived, flags, directive, marketSession,
       mstrCandles: mc, btcCandles: bc,
     }
-  }, [quote.data, quote.error, quote.fetchedAt, btc.data, btc.error, btc.fetchedAt,
-    mstr1d.data, mstr1d.error, mstr1d.fetchedAt, btc1d.data, settings, position, now])
+  }, [quote.data, quote.fetchedAt, btc.data, btc.fetchedAt,
+    mstr1d.data, mstr1d.fetchedAt, btc1d.data, btc1d.fetchedAt, settings, position, now])
 
   if (needToken) {
     return <TokenGate onDone={() => { setNeedToken(false); window.location.reload() }} />
   }
 
   const sources = { quote, btc, mstr1d, btc1d, settingsSrc, positionSrc, journalSrc }
-  const reloadAll = () => { quote.reload(); btc.reload(); mstr1d.reload(); btc1d.reload() }
+  const reloadAll = () => { quote.reload(); btc.reload(); mstr1d.reload(); btc1d.reload(); settingsSrc.reload(); positionSrc.reload() }
 
   return (
     <ToastProvider>
@@ -179,8 +197,10 @@ export default function App() {
         <header className="hdr">
           <div className="brand"><span className="bolt">⚡</span>TORQUE <span className="tiny" style={{ fontWeight: 500 }}>MSTR cockpit</span></div>
           <div className="tape">
-            <Ticker sym="MSTR" px={derived.price} chg={quote.data?.changePct} fresh={derived.freshQuote} />
-            <Ticker sym="BTC" px={derived.btcPrice} chg={btc.data?.changePct24h} fresh={derived.freshBtc} />
+            <Ticker sym="MSTR" px={derived.price} chg={derived.price == null ? null : quote.data?.changePct}
+              fresh={derived.freshQuote} kind={quote.data?.kind} delayedMin={quote.data?.delayedMin} sourceDetail={quote.data?.sourceDetail} />
+            <Ticker sym="BTC" px={derived.btcPrice} chg={derived.btcPrice == null ? null : btc.data?.changePct24h}
+              fresh={derived.freshBtc} sourceDetail={btc.data?.sourceDetail} />
           </div>
         </header>
         <nav className="nav" aria-label="Main">
@@ -191,11 +211,11 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <main key={tab} className="pagefade">
-          {tab === 'cockpit' && <Cockpit derived={derived} settings={settings} position={position} sources={sources} onReload={reloadAll} />}
-          {tab === 'chart' && <ChartPanel derived={derived} settings={settings} position={position} />}
-          {tab === 'journal' && <Journal journalSrc={journalSrc} />}
-          {tab === 'settings' && <Settings settingsSrc={settingsSrc} positionSrc={positionSrc} derived={derived} />}
+        <main>
+          <TabPanel active={tab === 'cockpit'}><Cockpit derived={derived} settings={settings} position={position} sources={sources} onReload={reloadAll} /></TabPanel>
+          <TabPanel active={tab === 'chart'}><ChartPanel derived={derived} settings={settings} position={position} /></TabPanel>
+          <TabPanel active={tab === 'journal'}><Journal journalSrc={journalSrc} /></TabPanel>
+          <TabPanel active={tab === 'settings'}><Settings settingsSrc={settingsSrc} positionSrc={positionSrc} derived={derived} /></TabPanel>
         </main>
         <CommandK items={[
           { label: 'Go to Cockpit', k: ['home', 'dash'], run: () => setTab('cockpit') },
@@ -209,14 +229,16 @@ export default function App() {
   )
 }
 
-function Ticker({ sym, px, chg, fresh }) {
+function Ticker({ sym, px, chg, fresh, kind, delayedMin, sourceDetail }) {
   const cls = chg == null ? 'flat' : chg >= 0 ? 'pos' : 'neg'
   return (
     <span className="tk">
       <span className="sym">{sym}</span>
-      <span className="px num">{px == null ? '—' : fmtPx(px)}</span>
+      <span className="px num"><Num v={px} f={fmtPx} /></span>
       <span className={`chg num ${cls}`}>{chg == null ? '' : `${chg >= 0 ? '+' : ''}${round2(chg)}%`}</span>
-      <FreshChip fresh={fresh} />
+      <FreshChip fresh={fresh} title={sourceDetail} />
+      {kind === 'eod' && <span className="chip stale" title={`end-of-day close via ${sourceDetail || 'fallback'}`}><span className="dot" />EOD</span>}
+      {kind === 'delayed' && Number.isFinite(delayedMin) && <span className="tiny" title={sourceDetail}>{delayedMin}m delayed</span>}
     </span>
   )
 }
@@ -239,9 +261,3 @@ function TokenGate({ onDone }) {
     </div>
   )
 }
-
-export function fmtPx(x) {
-  if (!Number.isFinite(x)) return '—'
-  return x >= 10000 ? Math.round(x).toLocaleString('en-US') : x.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-export function round2(x) { return Math.round(x * 100) / 100 }
