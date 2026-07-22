@@ -5,7 +5,7 @@ import { atr, ema } from '../src/lib/ta.js'
 import { initialStop, sizePosition } from '../src/lib/risk.js'
 import { trendUp, trendDown, candlesFromCloses, patchCandles } from './fixtures.js'
 
-const SETTINGS = { equity: 100000, riskPct: 1, maxPositionPct: 30, atrMult: 2.5 }
+const SETTINGS = { equity: 100000, riskPct: 1, maxPositionPct: 30, atrMult: 2.5, stopMode: 'atr', stopPct: 8, addRiskFraction: 0.5 }
 
 /** the proven pullback-trigger construction from the signals suite */
 function triggerScenario() {
@@ -47,6 +47,19 @@ describe('armChecklist', () => {
     expect(a.insufficient).toBe(true)
     expect(a.armed).toBe(false)
   })
+  it('BTC above its 50-day but not aligned → NO fake price distance, a shape note instead', () => {
+    // long rise then a shallow fade: chop regime with price still above EMA50
+    const closes = []
+    let px = 60000
+    for (let i = 0; i < 70; i++) { closes.push(px); px *= 1.012 }
+    for (let i = 0; i < 30; i++) { closes.push(px); px *= 0.997 }
+    const btc = candlesFromCloses(closes)
+    const a = armChecklist(trendUp(120), btc)
+    if (!a.btc.pass) { // precondition: this shape reads chop
+      expect(a.btc.distancePct).toBeNull()
+      expect(a.btc.note).toContain('trend shape')
+    }
+  })
 })
 
 describe('triggerTickets', () => {
@@ -75,6 +88,29 @@ describe('triggerTickets', () => {
   it('no settings / short data → empty, never throws', () => {
     expect(triggerTickets({ mstrCandles: trendUp(120), settings: null })).toEqual([])
     expect(triggerTickets({ mstrCandles: trendUp(20), settings: SETTINGS })).toEqual([])
+  })
+  it('honors the user\'s stop mode — percent mode prices a percent stop, not ATR', () => {
+    const candles = trendDown(120)
+    const settings = { ...SETTINGS, stopMode: 'percent', stopPct: 8 }
+    const bo = triggerTickets({ mstrCandles: candles, settings }).find((t) => t.name === 'Breakout day')
+    const st = initialStop({ mode: 'percent', entry: bo.entry, pct: 8 })
+    expect(bo.stop).toBe(st.stop)
+    const sz = sizePosition({ equity: 100000, riskPct: 1, entry: bo.entry, stop: st.stop, maxPositionPct: 30 })
+    expect(bo.shares).toBe(sz.shares)
+  })
+  it('forAdd sizes at riskPct × addRiskFraction (matches the production ADD rung)', () => {
+    const candles = trendDown(120)
+    const settings = { ...SETTINGS, stopMode: 'atr', addRiskFraction: 0.5 }
+    const full = triggerTickets({ mstrCandles: candles, settings }).find((t) => t.name === 'Breakout day')
+    const add = triggerTickets({ mstrCandles: candles, settings, forAdd: true }).find((t) => t.name === 'Breakout day')
+    expect(add.riskUsd).toBeLessThan(full.riskUsd)
+    expect(add.riskUsd / full.riskUsd).toBeCloseTo(0.5, 1)
+  })
+  it('a live pullback trigger is marked live: true', () => {
+    const tickets = triggerTickets({ mstrCandles: triggerScenario(), settings: { ...SETTINGS, stopMode: 'atr' } })
+    const pb = tickets.find((t) => t.name === 'Pullback reclaim')
+    expect(pb.live).toBe(true)
+    expect(pb.trigger).toContain('LIVE NOW')
   })
 })
 

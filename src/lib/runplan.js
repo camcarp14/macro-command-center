@@ -44,18 +44,29 @@ export function armChecklist(mstrCandles, btcCandles) {
 
   const reg = regime(mstrCandles)
   const align = btcAlignment(btcCandles)
-  let btc = { pass: align.aligned, state: align.state, score: align.score, level: null, distancePct: null }
+  let btc = { pass: align.aligned, state: align.state, score: align.score, level: null, distancePct: null, note: null }
   if (Array.isArray(btcCandles) && btcCandles.length >= MIN_BARS) {
     const bCloses = btcCandles.map((c) => c.c)
     const bClose = bCloses[bCloses.length - 1]
     const bE50 = ema(bCloses, 50)[bCloses.length - 1]
-    btc = { ...btc, level: bE50 == null ? null : r2(bE50), distancePct: align.aligned || bE50 == null || !(bClose > 0) ? null : r1(((bE50 / bClose) - 1) * 100) }
+    // a price distance only when price is genuinely BELOW the 50-day; when
+    // it's above but the regime still isn't up, the blockers are trend
+    // shape, and pretending a level exists would be a lie with a plus sign
+    const below = bE50 != null && bClose > 0 && bClose < bE50
+    btc = {
+      ...btc,
+      level: bE50 == null ? null : r2(bE50),
+      distancePct: !align.aligned && below ? r1(((bE50 / bClose) - 1) * 100) : null,
+      note: !align.aligned && bE50 != null && !below
+        ? 'price already above the 50-day — the blockers are trend shape (slope, higher lows), not a level'
+        : null,
+    }
   }
 
   const pb = pullbackSetup(mstrCandles)
   const bo = breakout(mstrCandles)
   const paths = {
-    breakout: { active: bo.active, level: bo.level, distancePct: bo.active ? null : distTo(bo.level) },
+    breakout: { active: bo.active, level: bo.level, distancePct: bo.active ? null : distTo(bo.levelRaw ?? bo.level) },
     pullback: { stage: pb.stage, refHigh: pb.refHigh },
   }
 
@@ -67,24 +78,33 @@ export function armChecklist(mstrCandles, btcCandles) {
 /**
  * Pre-computed order tickets AT the trigger levels (not at today's price):
  * when the day comes, the ticket already exists. Sizing/stops use the exact
- * production risk engine. Entries remain gated by the directive — a ticket
- * is preparation, not permission.
+ * production risk engine WITH the user's configured stop mode — a ticket
+ * that disagrees with the entry planner on the same screen is worse than
+ * no ticket. `forAdd` sizes at riskPct × addRiskFraction, matching the
+ * production ADD rung. Entries remain gated by the directive — a ticket is
+ * preparation, not permission.
  */
-export function triggerTickets({ mstrCandles, settings }) {
+export function triggerTickets({ mstrCandles, settings, forAdd = false }) {
   if (!settings || !Array.isArray(mstrCandles) || mstrCandles.length < MIN_BARS) return []
   const atrNow = atr(mstrCandles, 14)[mstrCandles.length - 1]
   const closes = mstrCandles.map((c) => c.c)
+  const lows = swings(mstrCandles, 2).lows
+  const lastSwingLow = lows.length ? lows[lows.length - 1].price : null
   const reg = regime(mstrCandles)
   const bo = breakout(mstrCandles)
   const pb = pullbackSetup(mstrCandles)
+  const riskPct = forAdd ? settings.riskPct * (settings.addRiskFraction ?? 0.5) : settings.riskPct
 
-  const ticket = (name, trigger, entry) => {
+  const ticket = (name, trigger, entry, live = false) => {
     if (!Number.isFinite(entry) || entry <= 0) return null
-    const st = initialStop({ mode: 'atr', entry, atr: atrNow, atrMult: settings.atrMult })
-    if (st.stop == null) return { name, trigger, entry: r2(entry), stop: null, note: st.warning }
-    const sz = sizePosition({ equity: settings.equity, riskPct: settings.riskPct, entry, stop: st.stop, maxPositionPct: settings.maxPositionPct })
+    const st = initialStop({
+      mode: settings.stopMode, entry, atr: atrNow, atrMult: settings.atrMult,
+      swingLow: lastSwingLow, pct: settings.stopPct,
+    })
+    if (st.stop == null) return { name, trigger, entry: r2(entry), stop: null, live, note: st.warning }
+    const sz = sizePosition({ equity: settings.equity, riskPct, entry, stop: st.stop, maxPositionPct: settings.maxPositionPct })
     return {
-      name, trigger, entry: r2(entry), stop: st.stop,
+      name, trigger, entry: r2(entry), stop: st.stop, live,
       shares: sz.ok ? sz.shares : 0, riskUsd: sz.ok ? sz.riskUsd : null,
       positionUsd: sz.ok ? sz.positionUsd : null, positionPct: sz.ok ? sz.positionPct : null,
       capped: sz.ok ? sz.capped : false, note: sz.ok ? null : sz.error,
@@ -92,11 +112,13 @@ export function triggerTickets({ mstrCandles, settings }) {
   }
 
   const tickets = []
-  if (!bo.active && bo.level != null) {
-    tickets.push(ticket('Breakout day', `MSTR closes above ${r2(bo.level)}`, bo.level))
+  if (!bo.active && bo.levelRaw != null) {
+    tickets.push(ticket('Breakout day', `MSTR closes above ${r2(bo.level)}`, bo.levelRaw))
   }
   if (reg.state === 'uptrend' && pb.stage !== 'none' && pb.refHigh != null) {
-    tickets.push(ticket('Pullback reclaim', `close back above ${r2(pb.refHigh)}`, pb.refHigh))
+    tickets.push(ticket('Pullback reclaim',
+      pb.stage === 'trigger' ? `close above ${r2(pb.refHigh)} — LIVE NOW` : `close back above ${r2(pb.refHigh)}`,
+      pb.refHigh, pb.stage === 'trigger'))
   } else if (reg.state === 'uptrend') {
     const e20v = ema(closes, 20)[closes.length - 1]
     if (e20v != null) tickets.push(ticket('Next pullback (est. at EMA20)', `dip to ~${r2(e20v)}, then reclaim the prior high`, e20v))

@@ -12,8 +12,8 @@ export default function RunPlan({ derived, settings, position }) {
     [derived.mstrCandles, derived.btcCandles],
   )
   const tickets = useMemo(
-    () => triggerTickets({ mstrCandles: derived.mstrCandles, settings }),
-    [derived.mstrCandles, settings],
+    () => triggerTickets({ mstrCandles: derived.mstrCandles, settings, forAdd: !!position }),
+    [derived.mstrCandles, settings, position],
   )
   const breaks = useMemo(
     () => thesisBreaks(derived.mstrCandles, derived.btcCandles),
@@ -56,7 +56,8 @@ export default function RunPlan({ derived, settings, position }) {
                 <span className="mark" aria-hidden>{radar.btc.pass ? '✓' : '○'}</span>
                 <span>
                   BTC regime uptrend (now {radar.btc.state} {radar.btc.score ?? '—'})
-                  {!radar.btc.pass && radar.btc.distancePct != null && <span className="dist num"> 50-day ≈ {fmtPx(radar.btc.level)} · +{radar.btc.distancePct}%</span>}
+                  {!radar.btc.pass && radar.btc.distancePct != null && <span className="dist num"> 50-day ≈ {fmtPx(radar.btc.level)} · +{radar.btc.distancePct}% away</span>}
+                  {!radar.btc.pass && radar.btc.note && <span className="tiny note"> — {radar.btc.note}</span>}
                 </span>
               </li>
             </ul>
@@ -70,7 +71,13 @@ export default function RunPlan({ derived, settings, position }) {
               </li>
               <li className={radar.paths.pullback.stage === 'trigger' ? 'pass' : 'fail'}>
                 <span className="mark" aria-hidden>{radar.paths.pullback.stage === 'trigger' ? '✓' : '○'}</span>
-                <span>pullback: {radar.paths.pullback.stage === 'none' ? 'needs an uptrend first — then a dip to EMA20 that holds' : radar.paths.pullback.stage === 'setup' ? `setup live — arms on a close above ${fmtPx(radar.paths.pullback.refHigh)}` : 'TRIGGER LIVE'}</span>
+                <span>pullback: {radar.paths.pullback.stage === 'none'
+                  ? radar.regime.state === 'uptrend'
+                    ? 'uptrend intact — waiting for a dip into the EMA20 zone'
+                    : 'needs an uptrend first — then a dip to EMA20 that holds'
+                  : radar.paths.pullback.stage === 'setup'
+                    ? `setup live — arms on a close above ${fmtPx(radar.paths.pullback.refHigh)}`
+                    : 'TRIGGER LIVE'}</span>
               </li>
             </ul>
           </div>
@@ -92,7 +99,11 @@ export default function RunPlan({ derived, settings, position }) {
               <tbody>
                 {tickets.map((t) => (
                   <tr key={t.name}>
-                    <td><strong>{t.name}</strong><div className="tiny">{t.trigger}</div></td>
+                    <td>
+                      <strong>{t.name}</strong>
+                      {t.live && <span className="chip live" style={{ marginLeft: 6 }}><span className="dot" />LIVE</span>}
+                      <div className="tiny">{t.trigger}</div>
+                    </td>
                     <td className="num">{t.shares > 0 ? `${t.shares} sh @ ~${fmtPx(t.entry)}` : '—'}</td>
                     <td className="num">{t.stop == null ? '—' : fmtPx(t.stop)}</td>
                     <td className="num">{t.riskUsd == null ? (t.note || '—') : `$${Math.round(t.riskUsd).toLocaleString('en-US')}`}</td>
@@ -107,7 +118,7 @@ export default function RunPlan({ derived, settings, position }) {
           <>
             <div className="tiny" style={{ margin: '14px 0 6px', fontWeight: 700 }}>THE CAMPAIGN LADDER (how a multi-month run gets ridden)</div>
             <ol className="ladder">
-              <li><strong>Entry</strong> — first trigger with both regimes green: 1 unit ({settings.riskPct}% risk, {settings.atrMult}×ATR stop).</li>
+              <li><strong>Entry</strong> — first trigger with both regimes green: 1 unit ({settings.riskPct}% risk, {stopModeLabel(settings)}).</li>
               <li><strong>Breakeven lock</strong> — at +{settings.beAtR}R the stop jumps to entry. The trade can no longer lose.</li>
               <li><strong>Add</strong> — next pullback trigger AFTER the lock: {settings.addRiskFraction} unit. Net open risk stays ≤ {settings.addRiskFraction}R because the first unit is risk-free.</li>
               <li><strong>Ride</strong> — the chandelier ({settings.chandelierMult}×ATR under the highest high) only ever rises. No target: the run decides when it's over, the trail decides where you leave.</li>
@@ -124,8 +135,17 @@ export default function RunPlan({ derived, settings, position }) {
             </ul>
           </>
         )}
-        {position && <p className="tiny" style={{ marginTop: 10 }}>Position open — tickets above are the ADD playbook; the directive still governs.</p>}
+        <p className="tiny" style={{ marginTop: 10 }}>
+          Tickets are preparation, not permission — the directive gates every entry.
+          {position && ` Position open: tickets are sized as ADDs (${settings?.addRiskFraction ?? 0.5}× risk unit).`}
+        </p>
       </section>
     </>
   )
+}
+
+function stopModeLabel(settings) {
+  return settings.stopMode === 'structure' ? 'swing-low stop'
+    : settings.stopMode === 'percent' ? `${settings.stopPct}% stop`
+      : `${settings.atrMult}×ATR stop`
 }

@@ -105,6 +105,16 @@ describe('breakout', () => {
     expect(breakout(candlesFromCloses([...flat, 100.002], { spreadPct: 0 })).active).toBe(false)
     expect(breakout(candlesFromCloses([...flat, 100.005], { spreadPct: 0 })).active).toBe(true)
   })
+  it('exposes levelRaw (exact comparison value) alongside the display-rounded level', () => {
+    // hand-built candles: the fixture generator rounds to cents and cannot
+    // carry the sub-cent float artifacts real feeds deliver
+    const candles = Array.from({ length: 71 }, (_, i) => ({
+      t: 1735689600 + i * 86400, o: 100, h: 100.004, l: 99.9, c: 100, v: 1e6,
+    }))
+    const b = breakout(candles)
+    expect(b.levelRaw).toBe(100.004)
+    expect(b.level).toBe(100)
+  })
 })
 
 describe('exitFlags', () => {
