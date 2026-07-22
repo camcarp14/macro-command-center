@@ -4,7 +4,9 @@
 import React, { useState } from 'react'
 import { SkPage, Expand, FreshChip } from './primitives.jsx'
 import { sizePosition, initialStop } from '../lib/risk.js'
+import { alignByDay, mNavSeries } from '../lib/torque.js'
 import { fmtPx, round2 } from '../lib/format.js'
+import RunPlan from './RunPlan.jsx'
 
 const ACTION_COPY = {
   ENTER: 'Enter long',
@@ -57,6 +59,7 @@ export default function Cockpit({ derived, settings, position, sources, onReload
       </section>
 
       {position && <PositionCard derived={derived} position={position} />}
+      <RunPlan derived={derived} settings={settings} position={position} />
       <EntryPlanner derived={derived} settings={settings} hasPosition={!!position} />
       <TorqueCard derived={derived} settings={settings} />
       <RegimeCard title="MSTR regime" read={derived.regime} extra={derived.pullback} breakout={derived.breakout} fresh={derived.freshCandles} />
@@ -174,6 +177,11 @@ function sizingErrorCopy(code) {
 function TorqueCard({ derived, settings }) {
   const { beta, rs, nav, torqueRead } = derived
   const seeded = settings?.btcHoldingsSeeded || settings?.sharesSeeded
+  const navHist = React.useMemo(() => {
+    if (!settings) return null
+    const aligned = alignByDay(derived.mstrCandles, derived.btcCandles)
+    return mNavSeries(aligned.a, aligned.b, { sharesOutstanding: settings.sharesOutstanding, btcHoldings: settings.btcHoldings })
+  }, [derived.mstrCandles, derived.btcCandles, settings])
   return (
     <section className="card" data-testid="torque-card">
       <div className="ttl">Leverage truth
@@ -187,12 +195,39 @@ function TorqueCard({ derived, settings }) {
         <div className="stat"><div className="k">20d RS</div><div className={`v num ${rs?.spreadPct == null ? '' : rs.spreadPct >= 0 ? 'pos' : 'neg'}`}>{rs?.spreadPct == null ? '—' : `${rs.spreadPct >= 0 ? '+' : ''}${round2(rs.spreadPct)}pp`}</div><div className="d">MSTR − BTC</div></div>
       </div>
       <p className="sub" style={{ marginTop: 10 }}>{torqueRead.text}</p>
+      {navHist && navHist.latest != null && navHist.series.filter((x) => x != null).length > 30 && (
+        <MNavStrip hist={navHist} />
+      )}
       {seeded && (
         <div className="guardrail"><span>⚠︎</span><span>
           BTC holdings / share count are SEEDED estimates (as of {settings.btcHoldingsAsOf}). Verify against the latest 8-K in Settings — mNAV is only as honest as these two numbers.
         </span></div>
       )}
     </section>
+  )
+}
+
+/** Where today's premium sits vs the recent past — a position strip, not a
+ *  chart. Approximation (today's balance sheet across history), labeled. */
+function MNavStrip({ hist }) {
+  const { min, max, latest } = hist
+  const span = max - min || 1
+  const posPct = Math.max(0, Math.min(100, ((latest - min) / span) * 100))
+  return (
+    <div style={{ marginTop: 10 }} data-testid="mnav-strip">
+      <div className="tiny" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+        <span>mNAV vs loaded history</span>
+        <span className="num">{min}× — {max}×</span>
+      </div>
+      <div className="meter" role="img" aria-label={`today's mNAV ${latest} sits at ${Math.round(posPct)}% of its historical range ${min} to ${max}`}>
+        <div style={{ width: `${Math.max(3, posPct)}%` }} />
+      </div>
+      <div className="tiny" style={{ marginTop: 4 }}>
+        today {latest}× · {posPct < 25 ? 'cheap end of the range — the leverage is on sale'
+          : posPct > 75 ? 'rich end of the range — you\'re paying up'
+            : 'mid-range'} · assumes today's share count/holdings across history — shape, not gospel
+      </div>
+    </div>
   )
 }
 

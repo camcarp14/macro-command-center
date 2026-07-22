@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { alignByDay, dailyLogReturns, rollingBeta, relativeStrength, mNav, torqueRead } from '../src/lib/torque.js'
+import { alignByDay, dailyLogReturns, rollingBeta, relativeStrength, mNav, mNavSeries, torqueRead } from '../src/lib/torque.js'
 import { BASE_T } from './fixtures.js'
 
 const DAY = 86400
@@ -95,6 +95,22 @@ describe('mNav', () => {
   it('any missing input → all nulls', () => {
     expect(mNav({ price: 400, sharesOutstanding: null, btcHoldings: 600000, btcPrice: 100000 }).mNav).toBeNull()
     expect(mNav({ price: 0, sharesOutstanding: 1, btcHoldings: 1, btcPrice: 1 }).mNav).toBeNull()
+  })
+})
+
+describe('mNavSeries', () => {
+  const bs = { sharesOutstanding: 300e6, btcHoldings: 600000 }
+  it('hand-computed shape: price 400 / btc 100k → 2.0; price 200 → 1.0', () => {
+    const out = mNavSeries([400, 200], [100000, 100000], bs)
+    expect(out.series).toEqual([2, 1])
+    expect(out.max).toBe(2)
+    expect(out.min).toBe(1)
+    expect(out.latest).toBe(1)
+  })
+  it('bad inputs → empty, never throws', () => {
+    expect(mNavSeries([], [], bs).latest).toBeNull()
+    expect(mNavSeries([400], [100000], { sharesOutstanding: 0, btcHoldings: 1 }).series).toEqual([])
+    expect(mNavSeries([400, 0], [100000, 100000], bs).series[1]).toBeNull()
   })
 })
 

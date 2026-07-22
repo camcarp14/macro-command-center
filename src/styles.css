@@ -288,6 +288,22 @@ kbd { font-family: var(--mono); font-size: 10.5px; border: 1px solid var(--borde
 .legend-swatch { display: inline-flex; align-items: center; gap: 5px; }
 .legend-swatch i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
 
+/* ---------------- run radar ---------------- */
+.radar-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media (max-width: 640px) { .radar-cols { grid-template-columns: 1fr; } }
+.radar-list { list-style: none; margin: 0; padding: 0; }
+.radar-list li { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; font-size: 13px; }
+.radar-list li .mark { flex: none; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 800; margin-top: 1px; }
+.radar-list li.pass { color: var(--ink); }
+.radar-list li.pass .mark { background: rgba(18, 165, 148, 0.15); color: var(--good); }
+.radar-list li.fail { color: var(--ink-2); }
+.radar-list li.fail .mark { background: rgba(255, 255, 255, 0.06); color: var(--ink-3); }
+.radar-list .dist { color: var(--warn); font-weight: 700; font-size: 12px; }
+.radar-list .note { display: block; }
+.ladder { margin: 0; padding-left: 20px; }
+.ladder li { margin: 5px 0; color: var(--ink-2); font-size: 13px; }
+.ladder li strong { color: var(--ink); }
+
 /* empty & error states — always guide, never dead-end */
 .empty { text-align: center; padding: 28px 16px; color: var(--ink-2); }
 .empty .glyph { font-size: 26px; margin-bottom: 6px; }
