@@ -195,10 +195,14 @@ separately for fixture tests (`parseYahooChart`, `parseStooqDaily`, `parseBinanc
 `parseCoinbaseCandles`, `parseCoinbaseSpot`, `parseCoingeckoOhlc` take the raw upstream JSON/CSV).
 - `mstrQuote()` → `{ symbol:'MSTR', price, prevClose, changePct, dayHigh, dayLow,
   marketState, delayedMin: 15, kind: 'delayed'|'eod', sourceDetail }`
-  Chain: Yahoo `query1.finance.yahoo.com/v8/finance/chart/MSTR?interval=1m&range=1d`
-  (meta.regularMarketPrice, chartPreviousClose; UA header required) → Stooq EOD CSV
-  (`stooq.com/q/d/l/?s=mstr.us&i=d`, last row; kind:'eod', delayedMin:null).
-- `mstrCandles(tf)` → tf `'1d'` (range 2y) | `'30m'` (range 60d) via Yahoo chart;
+  Chain: Yahoo chart `?interval=1d&range=5d` on query1 → query2 (meta.regularMarketPrice;
+  prevClose from the SECOND-TO-LAST daily candle — chartPreviousClose is the close before
+  the requested range, not yesterday) → Stooq EOD CSV (`stooq.com/q/d/l/?s=mstr.us&i=d`,
+  last row; kind:'eod', delayedMin:null). All requests send a MINIMAL 'Mozilla/5.0'
+  user-agent: field-verified that full fake-browser UAs get bot-flagged from datacenter
+  IPs while the minimal UA passes. `quoteFromChart(parsed)` is the pure, tested assembler.
+- `mstrCandles(tf)` → tf `'1d'` (range 2y) | `'30m'` (range 60d) via Yahoo chart
+  (query1 → query2 mirrors) → Stooq daily for '1d';
   drop null-close rows; map to candle shape (t already unix sec).
 - `btcSpot()` → `{ price, changePct24h, sourceDetail }` —
   Binance `api/v3/ticker/24hr?symbol=BTCUSDT` → Coinbase `api.coinbase.com/v2/prices/BTC-USD/spot`
