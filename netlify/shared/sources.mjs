@@ -6,12 +6,17 @@
 // Binance → Coinbase → CoinGecko for BTC. A paid key drops in here later.
 import { fetchWithTimeout } from './util.mjs'
 
-const UA = { 'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36' }
+// MINIMAL user-agent, on purpose. Field-verified on the live deploy: the
+// /api/status probes (plain 'Mozilla/5.0') got 200 from Yahoo and Stooq
+// while the data path (full fake-Chrome UA) was refused — from a
+// datacenter IP, a full browser UA without a browser TLS fingerprint is
+// exactly what bot detection flags. Impersonate nothing; be a polite tool.
+const UA = { 'user-agent': 'Mozilla/5.0' }
 
 // Per-attempt budget of 3s: Netlify kills synchronous functions at ~10s, so
 // an 8s hang on the primary would starve the fallbacks the chain exists for.
 async function getJson(url, opts = {}, timeoutMs = 3000) {
-  const res = await fetchWithTimeout(url, { ...opts, headers: { accept: 'application/json', ...UA, ...(opts.headers || {}) } }, timeoutMs)
+  const res = await fetchWithTimeout(url, { ...opts, headers: { ...UA, ...(opts.headers || {}) } }, timeoutMs)
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`)
   return res.json()
 }
@@ -109,20 +114,47 @@ export function parseCoingeckoSimple(raw) {
 
 /* ================= fetchers with fallback chains ================= */
 
-const YA = 'https://query1.finance.yahoo.com/v8/finance/chart'
+// query1 and query2 are equivalent Yahoo chart mirrors; one sometimes
+// rate-limits while the other serves.
+const YAHOO_HOSTS = [
+  'https://query1.finance.yahoo.com/v8/finance/chart',
+  'https://query2.finance.yahoo.com/v8/finance/chart',
+]
 
-/** MSTR quote: Yahoo delayed feed → Stooq EOD. Result names its honesty. */
+async function yahooChart(params) {
+  const errors = []
+  for (const base of YAHOO_HOSTS) {
+    try {
+      return parseYahooChart(await getJson(`${base}/MSTR?${params}`))
+    } catch (e) { errors.push(`${new URL(base).host}: ${e.message}`) }
+  }
+  throw new Error(`yahoo: ${errors.join(' | ')}`)
+}
+
+/** Pure quote assembly from a parsed daily chart — unit-testable.
+ *  prevClose comes from the second-to-last daily candle (works both while
+ *  the last bar is a live partial and after the close), NOT from
+ *  chartPreviousClose, which is the close before the REQUESTED RANGE. */
+export function quoteFromChart(parsed) {
+  if (parsed.price == null) throw new Error('yahoo: no regularMarketPrice')
+  const cs = parsed.candles
+  const prevClose = cs.length >= 2 ? cs[cs.length - 2].c : parsed.prevClose
+  const last = cs.length ? cs[cs.length - 1] : null
+  const changePct = prevClose ? ((parsed.price / prevClose) - 1) * 100 : null
+  return {
+    symbol: 'MSTR', price: parsed.price, prevClose,
+    changePct: changePct == null ? null : Math.round(changePct * 100) / 100,
+    dayHigh: parsed.dayHigh ?? last?.h ?? null, dayLow: parsed.dayLow ?? last?.l ?? null,
+    marketState: parsed.marketState,
+    delayedMin: 15, kind: 'delayed', sourceDetail: 'yahoo',
+  }
+}
+
+/** MSTR quote: Yahoo daily chart (the exact request shape the /api/status
+ *  probe field-verifies) via query1→query2 → Stooq EOD. */
 export async function mstrQuote() {
   try {
-    const parsed = parseYahooChart(await getJson(`${YA}/MSTR?interval=1m&range=1d`))
-    if (parsed.price == null) throw new Error('yahoo: no regularMarketPrice')
-    const changePct = parsed.prevClose ? ((parsed.price / parsed.prevClose) - 1) * 100 : null
-    return {
-      symbol: 'MSTR', price: parsed.price, prevClose: parsed.prevClose,
-      changePct: changePct == null ? null : Math.round(changePct * 100) / 100,
-      dayHigh: parsed.dayHigh, dayLow: parsed.dayLow, marketState: parsed.marketState,
-      delayedMin: 15, kind: 'delayed', sourceDetail: 'yahoo',
-    }
+    return quoteFromChart(await yahooChart('interval=1d&range=5d'))
   } catch (yahooErr) {
     const { candles } = parseStooqDaily(await getText('https://stooq.com/q/d/l/?s=mstr.us&i=d'))
     const last = candles[candles.length - 1]
@@ -136,11 +168,11 @@ export async function mstrQuote() {
   }
 }
 
-/** MSTR candles: Yahoo (1d→2y / 30m→60d) → Stooq daily as last resort. */
+/** MSTR candles: Yahoo (1d→2y / 30m→60d), query1→query2 → Stooq daily. */
 export async function mstrCandles(tf) {
   const cfg = tf === '30m' ? { interval: '30m', range: '60d' } : { interval: '1d', range: '2y' }
   try {
-    const { candles } = parseYahooChart(await getJson(`${YA}/MSTR?interval=${cfg.interval}&range=${cfg.range}`))
+    const { candles } = await yahooChart(`interval=${cfg.interval}&range=${cfg.range}`)
     if (candles.length === 0) throw new Error('yahoo: zero candles')
     return { candles, sourceDetail: 'yahoo' }
   } catch (yahooErr) {

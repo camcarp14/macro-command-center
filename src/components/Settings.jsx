@@ -257,25 +257,54 @@ function SourceHealth() {
       {state.error && <div className="error-row"><span>{state.error}</span><button className="btn sm" onClick={run}>Retry</button></div>}
       {!state.data && !state.error && <p className="sub">MSTR: Yahoo (delayed ~15 min) → Stooq EOD fallback. BTC: Binance → Coinbase → CoinGecko. Run a ping to see live upstream health from the server's vantage point.</p>}
       {state.data && (
-        <div className="tbl-wrap">
-          <table>
-            <thead><tr><th>Upstream</th><th>Status</th><th>Latency</th></tr></thead>
-            <tbody>
-              {Object.entries(state.data.pings || {}).map(([name, p]) => (
-                <tr key={name}>
-                  <td>{name}</td>
-                  <td>{p.ok ? <span className="chip live"><span className="dot" />ok {p.httpStatus}</span> : <span className="chip dead"><span className="dot" />{p.error || `HTTP ${p.httpStatus}`}</span>}</td>
-                  <td className="num">{p.latencyMs}ms</td>
+        <>
+          <div className="tbl-wrap">
+            <table>
+              <thead><tr><th>Upstream</th><th>Status</th><th>Latency</th></tr></thead>
+              <tbody>
+                {Object.entries(state.data.pings || {}).map(([name, p]) => (
+                  <tr key={name}>
+                    <td>{name}</td>
+                    <td>{p.ok ? <span className="chip live"><span className="dot" />ok {p.httpStatus}</span> : <span className="chip dead"><span className="dot" />{p.error || `HTTP ${p.httpStatus}`}</span>}</td>
+                    <td className="num">{p.latencyMs}ms</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td>blobs (state store)</td>
+                  <td>{state.data.blobs?.ok ? <span className="chip live"><span className="dot" />ok</span> : <span className="chip dead"><span className="dot" />{state.data.blobs?.error}</span>}</td>
+                  <td />
                 </tr>
-              ))}
-              <tr>
-                <td>blobs (state store)</td>
-                <td>{state.data.blobs?.ok ? <span className="chip live"><span className="dot" />ok</span> : <span className="chip dead"><span className="dot" />{state.data.blobs?.error}</span>}</td>
-                <td />
-              </tr>
-            </tbody>
-          </table>
-        </div>
+              </tbody>
+            </table>
+          </div>
+          {Object.keys(state.data.sourceStatus || {}).length > 0 && (
+            <>
+              <div className="ttl" style={{ marginTop: 16 }}>Last real fetch per endpoint (server-side)</div>
+              <div className="tbl-wrap">
+                <table>
+                  <thead><tr><th>Endpoint</th><th>Last result</th><th>Detail / last error</th></tr></thead>
+                  <tbody>
+                    {Object.values(state.data.sourceStatus).map((sst) => (
+                      <tr key={sst.name}>
+                        <td>{sst.name}</td>
+                        <td>{sst.ok
+                          ? <span className="chip live"><span className="dot" />ok · {sst.latencyMs}ms</span>
+                          : <span className="chip dead"><span className="dot" />failed</span>}</td>
+                        <td className="tiny" style={{ whiteSpace: 'normal', maxWidth: 340 }}>
+                          {sst.ok ? (sst.detail || '—') : (sst.lastError || '—')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="tiny" style={{ marginTop: 6 }}>
+                Pings test reachability with a minimal request; this table shows what the REAL
+                data fetches last returned — when they disagree, the difference is the diagnosis.
+              </p>
+            </>
+          )}
+        </>
       )}
     </section>
   )

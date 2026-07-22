@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   parseYahooChart, parseStooqDaily, parseBinanceKlines, parseBinance24hr,
   parseCoinbaseCandles, parseCoinbaseSpot, parseCoingeckoOhlc, parseCoingeckoSimple,
+  quoteFromChart,
 } from '../netlify/shared/sources.mjs'
 import {
   YAHOO_CHART_SAMPLE, YAHOO_CHART_WITH_NULLS, STOOQ_CSV_SAMPLE,
@@ -25,6 +26,22 @@ describe('parseYahooChart', () => {
   it('throws on malformed payloads (chain moves to fallback)', () => {
     expect(() => parseYahooChart({})).toThrow()
     expect(() => parseYahooChart({ chart: { result: [{}] } })).toThrow()
+  })
+})
+
+describe('quoteFromChart', () => {
+  it('prevClose comes from the second-to-last daily candle, NOT chartPreviousClose', () => {
+    // fixture deliberately has chartPreviousClose 405.1 ≠ prior candle close 406.6
+    const q = quoteFromChart(parseYahooChart(YAHOO_CHART_SAMPLE))
+    expect(q.price).toBe(412.35)
+    expect(q.prevClose).toBe(406.6)
+    expect(q.changePct).toBeCloseTo(((412.35 / 406.6) - 1) * 100, 1)
+    expect(q.kind).toBe('delayed')
+    expect(q.marketState).toBe('open')
+  })
+  it('throws when the chart carries no market price (chain falls through)', () => {
+    const parsed = parseYahooChart(YAHOO_CHART_SAMPLE)
+    expect(() => quoteFromChart({ ...parsed, price: null })).toThrow()
   })
 })
 
