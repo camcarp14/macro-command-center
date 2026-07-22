@@ -110,7 +110,9 @@ export function breakout(candles, lookback = 20) {
       facts.push(`volume expansion: ${Math.round(candles[last].v / 1000)}k vs 20-bar avg ${Math.round(v20[last] / 1000)}k`)
     }
   }
-  return { active, level: r2(level), facts }
+  // levelRaw: the exact value the signal compares against — planning tools
+  // must price tickets off it, not the display-rounded level
+  return { active, level: r2(level), levelRaw: level, facts }
 }
 
 /**

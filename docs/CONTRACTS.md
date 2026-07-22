@@ -80,7 +80,8 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
   AND latest close > previous bar's high. `refHigh` = that previous bar's high.
 - `breakout(candles, lookback = 20)` → `{ active, level, facts }`
   Latest close > max high of the PRIOR `lookback` bars (excluding latest bar).
-  Comparison is against the UNROUNDED level; `level` is rounded for display only.
+  Comparison is against the UNROUNDED level; `level` is rounded for display only and
+  `levelRaw` carries the exact comparison value for planning tools.
   Add fact when `v > 1.3 * sma(v,20)` ("volume expansion"); volume nulls → skip that fact.
 - `exitFlags({ candles, position, effectiveStop })` → array of
   `{ id, severity: 'hard'|'soft', fact }`, possibly empty. position = `{avgEntry, initialStop}`.
@@ -105,10 +106,33 @@ Every result carries `facts: string[]` — plain English WITH the numbers used.
 - `mNav({ price, sharesOutstanding, btcHoldings, btcPrice })` →
   `{ marketCap, btcNavUsd, mNav, premiumPct, btcPerShare, impliedBtcPrice }` — any input
   missing/≤0 → all nulls. `impliedBtcPrice = marketCap / btcHoldings`.
+- `mNavSeries(mstrCloses, btcCloses, {sharesOutstanding, btcHoldings})` →
+  `{ series, min, max, latest }` — approximate mNAV per aligned day using TODAY's
+  balance sheet across history (shape-not-gospel; the UI labels it exactly that).
+  Non-positive inputs → empty/null-safe.
 - `torqueRead({ beta, mNav })` → `{ grade: 'efficient'|'fair'|'rich'|'unknown', ratio, text }`
   Grades on the UNROUNDED quotient beta/mNav (> 1.1 efficient; 0.9–1.1 fair; < 0.9 rich;
   null inputs → unknown); `ratio` is rounded for display only.
   `text` explains with numbers ("1% BTC move ≈ 1.9% MSTR; you pay 1.62× NAV").
+
+## src/lib/runplan.js  (imports: ta.js, signals.js, risk.js)
+
+The preparation layer — derived from the SAME rules that gate entries, so
+bullish bias lives only in what is watched, never in what fires.
+- `armChecklist(mstrCandles, btcCandles)` → `{ insufficient, mstr:[{id,label,pass,level,distancePct,note}×5], btc:{pass,state,score,level,distancePct}, paths:{breakout:{active,level,distancePct}, pullback:{stage,refHigh}}, regime, btcAlign, ready, armed }`
+  distancePct = % rally required to reach the flip level (null when passed, when not
+  price-expressible, or when price is already above the level — then `note` names the
+  real blockers instead of faking a distance).
+  ready = both regimes aligned; armed = ready && a trigger is live. < 60 candles → insufficient.
+- `triggerTickets({mstrCandles, settings, forAdd})` → array of pre-computed order tickets
+  AT trigger levels (breakout levelRaw — the exact comparison value, not the display
+  rounding; pullback reclaim refHigh in an uptrend, est. EMA20 otherwise), sized by the
+  production initialStop USING settings.stopMode (+ swingLow/stopPct as the entry planner
+  does) + sizePosition; `forAdd` sizes at riskPct × addRiskFraction to match the ADD rung;
+  tickets whose condition is currently true carry `live: true`. Tickets are preparation,
+  not permission — the directive still gates entries (footer states this unconditionally).
+- `thesisBreaks(mstrCandles, btcCandles)` → pre-committed plan-retirement levels:
+  last confirmed swing low, downtrend regime read, BTC 50-day loss.
 
 ## src/lib/freshness.js  (imports: nothing)
 

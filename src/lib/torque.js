@@ -99,6 +99,33 @@ export function mNav({ price, sharesOutstanding, btcHoldings, btcPrice }) {
 }
 
 /**
+ * Approximate mNAV history: today's share count and BTC holdings applied
+ * across day-aligned close series. Both inputs CHANGE over time (ATM raises,
+ * BTC buys), so this is shape-not-gospel — label it that way. It answers
+ * one question well: is today's premium high or low vs the recent past?
+ */
+export function mNavSeries(mstrCloses, btcCloses, { sharesOutstanding, btcHoldings }) {
+  const n = Math.min(mstrCloses?.length ?? 0, btcCloses?.length ?? 0)
+  if (n === 0 || !(sharesOutstanding > 0) || !(btcHoldings > 0)) {
+    return { series: [], min: null, max: null, latest: null }
+  }
+  const series = []
+  for (let i = 0; i < n; i++) {
+    const m = mstrCloses[i]
+    const b = btcCloses[i]
+    series.push(m > 0 && b > 0 ? Math.round(((m * sharesOutstanding) / (b * btcHoldings)) * 1000) / 1000 : null)
+  }
+  const vals = series.filter((x) => x != null)
+  if (!vals.length) return { series, min: null, max: null, latest: null }
+  return {
+    series,
+    min: Math.min(...vals),
+    max: Math.max(...vals),
+    latest: vals[vals.length - 1],
+  }
+}
+
+/**
  * Are you getting more move than premium you're paying? ratio = beta/mNAV.
  * >1.1 efficient · 0.9–1.1 fair · <0.9 rich.
  */

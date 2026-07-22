@@ -26,6 +26,16 @@ test.describe('cockpit — healthy market, live pullback trigger', () => {
 
     // seeded balance-sheet honesty warning is present
     await expect(page.getByTestId('torque-card')).toContainText('SEEDED')
+
+    // run preparation layer: radar reads ARMED in this scenario (uptrend +
+    // aligned BTC + live trigger), battle plan carries a computable ticket
+    await expect(page.getByTestId('run-radar')).toContainText('ARMED')
+    await expect(page.getByTestId('run-radar')).toContainText('Belief sets the watchlist')
+    await expect(page.getByTestId('battle-plan')).toContainText('If this happens')
+    await expect(page.getByTestId('battle-plan')).toContainText('THE CAMPAIGN LADDER')
+    await expect(page.getByTestId('battle-plan')).toContainText('WHAT RETIRES THE PLAN')
+    // mNAV history strip renders with the honesty caption
+    await expect(page.getByTestId('mnav-strip')).toContainText('shape, not gospel')
   })
 
   test('mobile: no horizontal overflow on ANY tab, nav reachable with ≥44px targets', async ({ page }, testInfo) => {
